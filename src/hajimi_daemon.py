@@ -313,7 +313,7 @@ class HajimiDaemon:
         allow_comment = self.config.get("interaction", {}).get("allow_comment", True)
         allow_danmaku = self.config.get("interaction", {}).get("allow_danmaku", True)
         allow_pm = self.config.get("interaction", {}).get("allow_private_message", True)
-        threshold = self.config.get("interaction", {}).get("at_score_threshold", 6.0)
+        threshold = self.config.get("interaction", {}).get("comment_score_threshold", 6.0)
         master_uid = self.config.get("profile", {}).get("master_uid")
         master_name = self.config.get("profile", {}).get("master_name", "主人")
 
@@ -480,20 +480,34 @@ class HajimiDaemon:
                         _log(f"  ⚠ 投喂弹幕反馈: {dm_res.get('message')}")
 
             # -------------------------------------------------------------
-            # 2. 评论与 @主人互动 (及格/良好以上积极发表亮点与科普，普通视频客气友好)
+            # 2. 评论与 @主人互动 (及格/良好>=6.0留评互动，只有 >= 7.5 分才 @主人)
             # -------------------------------------------------------------
             if allow_comment and aid:
                 comment_text = eval_res.get("cat_comment", "").strip()
-                if score >= threshold:  # >= 6.0 分
+                at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 7.5)
+                comment_threshold = self.config.get("interaction", {}).get("comment_score_threshold", 6.0)
+
+                should_at_master = (score >= at_threshold)
+
+                if score >= comment_threshold:  # >= 6.0 分，正常留评交流
                     nugget = eval_res.get("knowledge_nugget", "").strip()
                     if nugget and "知识科普" not in comment_text:
                         comment_text += f"\n\n💡【闪闪知识小科普】: {nugget}"
-                    if master_name and f"@{master_name}" not in comment_text:
-                        comment_text = f"@{master_name} " + comment_text
+
+                    if should_at_master:
+                        if master_name and f"@{master_name}" not in comment_text:
+                            comment_text = f"@{master_name} " + comment_text
+                    else:
+                        # 6.0 <= score < 7.5 分：不艾特主人，若原评语开头带有 @主人 则自动剥离
+                        if master_name and comment_text.startswith(f"@{master_name}"):
+                            comment_text = comment_text[len(f"@{master_name}"):].strip()
+
                 elif score >= 4.5:  # 4.5 <= score < 6.0，稍微一般的视频
-                    # 如果生成的评论温和客气就使用，否则给温和友好的打卡交流，绝不攻击贬低
+                    # 如果生成的评论温和客气就使用，否则给温和友好的打卡交流，绝不攻击贬低，不艾特主人
                     if not comment_text or not is_safe_comment(comment_text):
                         comment_text = f"🐾 喵呜~ 闪闪路过打卡学习中！期待UP主后续带来更多精彩内容喵！✨"
+                    if master_name and comment_text.startswith(f"@{master_name}"):
+                        comment_text = comment_text[len(f"@{master_name}"):].strip()
                 else:
                     # 极低分视频，不发布主楼长评，避免无意义刷屏
                     comment_text = ""
@@ -504,14 +518,20 @@ class HajimiDaemon:
                         _log(f"  🛡 安全风控拦截：评论文本包含不当词汇，自动修正为文明打卡！")
                         comment_text = f"🐾 喵呜~ 闪闪爪印打卡，前来支持UP主喵！祝生活愉快~ ✨"
 
+                    # 只有真正满足 should_at_master 时，才传递 at_map 通知主人
+                    current_at_map = at_map if should_at_master else {}
+
                     time.sleep(random.uniform(3.0, 5.5))
-                    _log(f"  💬 正在 B 站评论区发布交流评论: {comment_text[:40]}...")
-                    comment_res = self.core.post_comment(aid, comment_text, at_name_to_mid=at_map)
+                    at_tag = "并@主人" if should_at_master else "（不@主人）"
+                    _log(f"  💬 正在 B 站评论区发布交流评论{at_tag}: {comment_text[:40]}...")
+                    comment_res = self.core.post_comment(aid, comment_text, at_name_to_mid=current_at_map)
                     c_status = "成功" if comment_res.get("success") else "失败"
-                    self.log_activity("发评论互动", f"[{bvid}] {detail.get('title')[:30]}", comment_text, status=c_status, details=comment_res.get("message", ""))
+                    act_name = "发评论与@主人" if should_at_master else "发评论互动"
+                    self.log_activity(act_name, f"[{bvid}] {detail.get('title')[:30]}", comment_text, status=c_status, details=comment_res.get("message", ""))
                     if comment_res.get("success"):
-                        self.state["at_count_today"] = self.state.get("at_count_today", 0) + 1
-                        _log("  🎉 评论互动成功！")
+                        if should_at_master:
+                            self.state["at_count_today"] = self.state.get("at_count_today", 0) + 1
+                        _log(f"  🎉 评论互动成功！{at_tag}")
                     else:
                         _log(f"  ⚠ 评论发布反馈: {comment_res.get('message')}")
 

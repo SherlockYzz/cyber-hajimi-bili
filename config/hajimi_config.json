@@ -173,7 +173,7 @@
     "evening_journal_time": "22:00"
   },
   "interaction": {
-    "at_score_threshold": 6.0,
+    "at_score_threshold": 7.5,
     "allow_comment": true,
     "allow_private_message": true,
     "allow_like": true,
@@ -182,7 +182,7 @@
     "comment_style": "双子猫娘口吻+犀利提炼+@主人",
     "allow_danmaku": true,
     "max_master_pms_per_day": 3,
-    "master_pm_score_threshold": 8.8,
+    "master_pm_score_threshold": 8.5,
     "allow_article_like": true,
     "allow_article_comment": true,
     "allow_live_danmaku": true,

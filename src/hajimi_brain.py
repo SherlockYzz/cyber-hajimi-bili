@@ -174,7 +174,7 @@ class HajimiBrain:
         bvid = video_data.get("bvid", "")
 
         master_name = self.config.get("profile", {}).get("master_name", "主人")
-        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 6.0)
+        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 7.5)
 
         # 智能分类判断
         category = self.detect_category(video_data)
@@ -318,7 +318,7 @@ class HajimiBrain:
 ---
 【主人信息】
 称呼主人为: {master_name}
-触发在评论区 @主人的分数阈值: {at_threshold} 分 (基准线为 6.0 分，及格良好即可积极互动)
+触发在评论区 @主人的分数阈值: {at_threshold} 分 (严格要求：只有综合评分 >= 7.5 分时，should_at 才能为 true 并在评论中 @主人；6.0~7.4 分的良好视频同样发掘看点友好留评，但不 @主人)
 
 【互动与文明准则（绝不使用暴力词汇）】
 1. 默认及格良作线为 6.0 分，8.0分以上为宝藏神作。6.0分及以上的视频请积极发掘看点与亮点，友好互动交流；
@@ -416,7 +416,7 @@ class HajimiBrain:
         like = stat.get("like", 0)
 
         master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
-        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 6.0)
+        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 7.5)
 
         # 专栏文章篇幅适配（最多支持 10000 字）
         if len(content) <= 10000:
@@ -434,7 +434,7 @@ class HajimiBrain:
 ---
 【主人信息】
 称呼主人为: {master_name}
-触发在评论区 @主人的分数阈值: {at_threshold} 分 (基准线为 6.0 分，及格良好即可积极互动)
+触发在评论区 @主人的分数阈值: {at_threshold} 分 (严格要求：只有综合评分 >= 7.5 分时，should_at 才能为 true 并在评论中 @主人；6.0~7.4 分的良好视频同样发掘看点友好留评，但不 @主人)
 
 【互动与文明准则（绝不使用暴力词汇）】
 1. 默认及格良作线为 6.0 分，8.0分以上为宝藏神作。6.0分及以上的视频请积极发掘看点与亮点，友好互动交流；
