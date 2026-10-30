@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 赛博哈基米 (Cyber-Hajimi) - B 站底层通信与感知执行核心
 - 官方 OAuth 二维码扫码登录与凭证自动维护
@@ -25,6 +25,7 @@ import zlib
 from collections import Counter
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+import requests
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -640,11 +641,31 @@ class BiliHajimiCore:
             print(f"[Core] 抓取热门评论异常: {e}")
         return []
 
-    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None, root: int = 0, parent: int = 0) -> dict:
-        """发布视频主楼评论或回复指定热门评论参与社区讨论"""
+    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None, root: int = 0, parent: int = 0, check_duplicate: bool = True) -> dict:
+        """发布视频主楼评论或回复指定热门评论。内生强幂等防重：同一视频若已有自身主楼评论，底层直接拒绝重复请求！"""
         csrf = self.config.get("auth", {}).get("bili_jct", "")
         if not csrf:
             return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+
+        # 核心内生防重机制：发布主楼评论 (root == 0) 时，底层先在线校验当前视频评论区是否已存在自己的评论
+        if root == 0 and check_duplicate and aid:
+            my_mid = getattr(self, "bot_uid", None)
+            if not my_mid:
+                uinfo = self.get_user_info()
+                my_mid = uinfo.get("mid")
+                if my_mid:
+                    self.bot_uid = int(my_mid)
+            if my_mid:
+                try:
+                    params = {"oid": int(aid), "type": 1, "mode": 2, "ps": 50}
+                    signed = self.sign_wbi(params)
+                    chk_res = self._request("https://api.bilibili.com/x/v2/reply/wbi/main", params=signed)
+                    replies = chk_res.get("data", {}).get("replies", []) or []
+                    for r in replies:
+                        if int(r.get("mid", 0)) == int(my_mid):
+                            return {"success": False, "message": f"该视频(aid:{aid})评论区已存在您的评论，底层防重机制已直接拦截，拒绝重复刷屏！", "code": -409}
+                except Exception as e:
+                    pass
 
         url = "https://api.bilibili.com/x/v2/reply/add"
         payload = {
@@ -666,6 +687,24 @@ class BiliHajimiCore:
             return {"success": True, "message": "评论发布成功！", "data": resp.get("data")}
         else:
             return {"success": False, "message": resp.get("message", "发布失败"), "code": resp.get("code")}
+
+    def delete_comment(self, aid: int, rpid: int, reply_type: int = 1) -> dict:
+        """删除指定视频或专栏下自己发布的评论"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+        url = "https://api.bilibili.com/x/v2/reply/del"
+        payload = {
+            "type": int(reply_type),
+            "oid": int(aid),
+            "rpid": int(rpid),
+            "csrf": csrf
+        }
+        referer = f"https://www.bilibili.com/video/av{aid}" if reply_type == 1 else f"https://www.bilibili.com/read/cv{aid}"
+        resp = self._request(url, method="POST", data=payload, headers={"Referer": referer})
+        if resp.get("code") == 0:
+            return {"success": True, "message": "评论已成功删除！"}
+        return {"success": False, "message": resp.get("message", "删除失败"), "code": resp.get("code")}
 
     def report_video_view(self, aid: int, cid: int, progress: int = 60) -> dict:
         """向 B 站官方上报播放历史与进度，确保账号历史记录真实留痕"""
@@ -1043,7 +1082,7 @@ class BiliHajimiCore:
             return {"success": False, "message": f"上传异常: {e}"}
 
     def post_picture_dynamic(self, text: str, image_path: str) -> dict:
-        """发布带图片的 B 站动态"""
+        """发布带图片的 B 站动态 (优先使用现代 feed/create/dyn 接口)"""
         csrf = self.config.get("auth", {}).get("bili_jct", "")
         if not csrf:
             return {"success": False, "message": "未登录或缺少 csrf 凭证"}
@@ -1052,8 +1091,54 @@ class BiliHajimiCore:
         if not up_res.get("success"):
             return {"success": False, "message": f"图片上传失败: {up_res.get('message')}"}
 
-        url = "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/create_draw"
-        headers = {
+        # 优先使用现代官方动态发布接口 (支持完整纯文本与富文本节点)
+        try:
+            modern_url = f"https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf={csrf}"
+            headers = {
+                "User-Agent": self.user_agent,
+                "Cookie": self.get_cookie_header(),
+                "Origin": "https://t.bilibili.com",
+                "Referer": "https://t.bilibili.com/",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "dyn_req": {
+                    "content": {
+                        "contents": [
+                            {
+                                "raw_text": text,
+                                "type": 1,
+                                "biz_id": ""
+                            }
+                        ]
+                    },
+                    "pics": [
+                        {
+                            "img_src": up_res["image_url"],
+                            "img_width": int(up_res.get("image_width", 1024)),
+                            "img_height": int(up_res.get("image_height", 576)),
+                            "img_size": float(up_res.get("img_size", 500))
+                        }
+                    ],
+                    "scene": 2
+                }
+            }
+            res = requests.post(modern_url, headers=headers, json=payload, timeout=15)
+            resp = res.json()
+            if resp.get("code") == 0:
+                dyn_data = resp.get("data", {})
+                return {
+                    "success": True,
+                    "message": "动态发布成功！",
+                    "dynamic_id": dyn_data.get("dyn_id_str") or dyn_data.get("dyn_id"),
+                    "data": dyn_data
+                }
+        except Exception:
+            pass
+
+        # 降级回退到旧版 create_draw 接口
+        legacy_url = "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/create_draw"
+        legacy_headers = {
             "User-Agent": self.user_agent,
             "Cookie": self.get_cookie_header(),
             "Origin": "https://t.bilibili.com",
@@ -1066,7 +1151,7 @@ class BiliHajimiCore:
             "img_height": up_res["image_height"],
             "img_size": up_res["img_size"]
         }]
-        data = {
+        legacy_data = {
             "biz": 3,
             "category": 3,
             "type": 0,
@@ -1076,7 +1161,7 @@ class BiliHajimiCore:
             "csrf_token": csrf
         }
         try:
-            res = requests.post(url, data=data, headers=headers, timeout=15)
+            res = requests.post(legacy_url, data=legacy_data, headers=legacy_headers, timeout=15)
             resp = res.json()
             if resp.get("code") == 0:
                 dyn_data = resp.get("data", {})
@@ -1122,9 +1207,21 @@ class BiliHajimiCore:
             return articles
         return []
 
+    def report_article_view(self, cvid_or_id) -> dict:
+        """向 B 站官方上报专栏阅读记录，同步至账号云端历史记录"""
+        clean_id = str(cvid_or_id).lower().replace("cv", "")
+        url = "https://api.bilibili.com/x/article/viewinfo"
+        res = self._request(url, params={"id": clean_id})
+        return {
+            "success": res.get("code") == 0,
+            "message": "专栏阅读记录上报成功" if res.get("code") == 0 else res.get("message", "专栏上报失败"),
+            "code": res.get("code")
+        }
+
     def get_article_detail(self, cvid_or_id) -> dict:
         """获取专栏文章完整正文、段落、代码块、LaTeX公式与高清插图"""
         clean_id = str(cvid_or_id).lower().replace("cv", "")
+        self.report_article_view(clean_id)
         url_web = f"https://www.bilibili.com/read/cv{clean_id}/"
         headers = {
             "User-Agent": self.user_agent,
@@ -1361,6 +1458,24 @@ class BiliHajimiCore:
         if res.get("code") == 0:
             return {"success": True, "message": "直播弹幕发送成功！"}
         return {"success": False, "message": res.get("message", "发送直播弹幕失败"), "code": res.get("code")}
+
+    def report_live_view(self, room_id: int) -> dict:
+        """向 B 站官方上报直播间观看心跳，同步至账号云端历史记录"""
+        import base64
+        room_id = int(room_id)
+        raw_hb = f"60|{room_id}|1|0"
+        hb_b64 = base64.b64encode(raw_hb.encode("utf-8")).decode("utf-8")
+        url = "https://live-trace.bilibili.com/xlive/rdata-interface/v1/heartbeat/webHeartBeat"
+        res = self._request(
+            url,
+            params={"hb": hb_b64, "pf": "web"},
+            headers={"Referer": f"https://live.bilibili.com/{room_id}"}
+        )
+        return {
+            "success": res.get("code") == 0,
+            "message": "直播间观看记录同步成功" if res.get("code") == 0 else res.get("message", "直播上报失败"),
+            "code": res.get("code")
+        }
 
     def send_live_heartbeat(self, room_id: int) -> dict:
         """上报直播间在房心跳（挂机打卡、累积亲密度与经验）"""

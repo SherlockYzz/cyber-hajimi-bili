@@ -322,24 +322,29 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "message": f"已启动技术专栏研读任务：【{kw}】喵~"})
 
         elif path == "/api/inspect_live":
-            room_id = int(payload.get("room_id", 6))
+            room_id = payload.get("room_id")
+            if room_id:
+                try:
+                    room_id = int(room_id)
+                except Exception:
+                    room_id = None
             send_danmaku = bool(payload.get("send_danmaku", True))
             def _run_live():
                 global is_cruising, cruise_logs_buffer
                 is_cruising = True
-                cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 📺 启动直播间查房巡查: 房间号【{room_id}】...")
+                cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 📺 启动关注主播直播观看...")
                 try:
                     res = daemon_instance.inspect_and_cheer_live(room_id=room_id, send_danmaku=send_danmaku)
                     for l in res.get("logs", []):
                         cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] {l}")
-                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 直播间查房与弹幕互动完成！")
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 直播观看与互动完成！")
                 except Exception as e:
-                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] ⚠ 直播间巡查波动: {e}")
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] ⚠ 直播观看波动: {e}")
                 finally:
                     is_cruising = False
             t = threading.Thread(target=_run_live, daemon=True)
             t.start()
-            self._send_json({"success": True, "message": f"已派出闪闪突击查房直播间【{room_id}】喵~"})
+            self._send_json({"success": True, "message": "已开始观看关注主播的直播喵~"})
 
         elif path == "/api/boost_master":
             def _boost():
@@ -839,7 +844,7 @@ def get_dashboard_html() -> str:
       </li>
       <li class="nav-item" onclick="switchTab('tab-live')">
         <span class="nav-icon">📺</span>
-        <span>直播查房哨所</span>
+        <span>关注主播直播</span>
       </li>
       <li class="nav-item" onclick="switchTab('tab-wardrobe')">
         <span class="nav-icon">👗</span>
@@ -1045,25 +1050,24 @@ def get_dashboard_html() -> str:
       </div>
     </div>
 
-    <!-- Tab 9: 闪闪的直播查房哨所 -->
+    <!-- Tab 9: 关注主播直播观看与互动 -->
     <div id="tab-live" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>📺 闪闪的直播查房与弹幕哨所</h1>
-          <p class="desc">多模态直播间突击查房：实时捕获现场关键帧抓拍、视觉审视、感知现场弹幕流、同步心跳、发射猫娘打气弹幕并向主人私信速报。</p>
+          <h1>📺 关注主播直播与互动</h1>
+          <p class="desc">只看关注的主播直播：同步 B 站云端观看历史与心跳，感知现场弹幕，偶尔发送助威打气弹幕。</p>
         </div>
         <div class="header-actions">
-          <input id="liveRoomInput" type="number" placeholder="直播间房号" value="6" style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:120px;" />
           <label style="font-size:12.5px; color:#4b5563; display:flex; align-items:center; gap:4px; margin-right:4px;">
-            <input type="checkbox" id="liveDanmakuCheck" checked /> 发送打气弹幕
+            <input type="checkbox" id="liveDanmakuCheck" checked /> 偶尔发打气弹幕
           </label>
-          <button class="btn-action" style="background:#d97706; color:#fff;" onclick="triggerLiveInspectAction()">⚡ 立即突击查房</button>
+          <button class="btn-action" style="background:#d97706; color:#fff;" onclick="triggerLiveInspectAction()">📺 观看关注的主播直播</button>
           <button class="btn-action" onclick="loadStatus()">🔄 刷新记录</button>
         </div>
       </div>
       <div id="liveListContainer">
-        <!-- 动态加载直播查房卡片 -->
-        <div style="padding:40px; text-align:center; color:#9ca3af;">正在加载直播查房记录...</div>
+        <!-- 动态加载关注主播观看记录卡片 -->
+        <div style="padding:40px; text-align:center; color:#9ca3af;">正在加载直播观看记录...</div>
       </div>
     </div>
 
@@ -1731,21 +1735,19 @@ def get_dashboard_html() -> str:
   }
 
   async function triggerLiveInspectAction() {
-    const input = document.getElementById('liveRoomInput');
     const check = document.getElementById('liveDanmakuCheck');
-    const roomId = input ? parseInt(input.value) : 6;
     const sendDm = check ? check.checked : true;
     try {
       const res = await fetch('/api/inspect_live', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room_id: roomId, send_danmaku: sendDm })
+        body: JSON.stringify({ send_danmaku: sendDm })
       });
       const data = await res.json();
-      alert(data.message || '已派出闪闪突击查房！');
+      alert(data.message || '已开始观看关注的主播直播！');
       loadStatus();
     } catch(e) {
-      alert('查房请求失败: ' + e);
+      alert('观看直播请求失败: ' + e);
     }
   }
 

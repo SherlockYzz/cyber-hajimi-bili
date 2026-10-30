@@ -566,12 +566,23 @@ class HajimiDaemon:
             all_text = (detail.get("title", "") + " " + detail.get("desc", "")).lower()
             is_valuable_content = any(k in all_text for k in [
                 "ai", "大模型", "算法", "深度学习", "科普", "原理", "计算机", "python",
-                "transformer", "agent", "科研", "知识", "数学", "物理", "原画", "mad"
+                "transformer", "agent", "科研", "知识", "数学", "物理", "原画", "mad",
+                "8d", "环绕音乐", "全景声", "空间音频", "学习乐队", "乐队", "孤独摇滚", "新海诚", "radwimps"
             ])
 
             if allow_fav and aid and score >= fav_thresh and is_valuable_content and current_favs < max_favs_daily:
                 time.sleep(random.uniform(3.0, 6.0)) # 拟人化延迟
-                if any(k in all_text for k in ["ai", "大模型", "算法", "深度学习", "agent", "transformer"]):
+                # 仿照主人同款收藏夹进行智能分类投递
+                if any(k in all_text for k in ["8d", "环绕音乐", "全景声", "空间音频", "沉浸式音频", "双耳音频"]):
+                    target_folder = "【闪闪精选】8D 环绕音乐"
+                    f_intro = "复刻主人品味：甄选高沉浸感 8D 空间全景声、双耳环绕与极致治愈音乐宝藏🐾"
+                elif any(k in all_text for k in ["学习乐队", "乐队", "孤独摇滚", "结束乐队", "吉他", "贝斯", "轻音"]):
+                    target_folder = "【闪闪精选】学习乐队"
+                    f_intro = "复刻主人品味：甄选硬核乐队演练、孤独摇滚/轻音热血演奏与专注学习背景音🐾"
+                elif any(k in all_text for k in ["新海诚", "你的名字", "天气之子", "铃芽之旅", "言叶之庭", "秒速五厘米", "radwimps"]):
+                    target_folder = "【闪闪精选】新海诚与唯美视听"
+                    f_intro = "复刻主人品味：甄选新海诚光影美学、RADWIMPS 原声与神级动漫视听漫剪🐾"
+                elif any(k in all_text for k in ["ai", "大模型", "算法", "深度学习", "agent", "transformer"]):
                     target_folder = "【闪闪精选】AI与技术前沿"
                     f_intro = "闪闪精选：前沿人工智能、深度学习与大模型算法架构干货🐾"
                 elif any(k in all_text for k in ["科普", "原理", "计算机", "知识", "数学", "物理", "科学"]):
@@ -656,6 +667,12 @@ class HajimiDaemon:
                 _log("  ⚠ 专栏正文获取为空或受限，跳过")
                 continue
 
+            # 记录专栏阅读行为到 B 站云端历史和本地审计流水
+            rep_art = self.core.report_article_view(art_id)
+            art_status = "成功" if rep_art.get("success") else "失败"
+            self.log_activity("阅读专栏", f"[{art_id}] {art_title[:30]}", "研读技术专栏并同步至 B 站阅读历史", status=art_status, details=rep_art.get("message", ""))
+            _log(f"  📖 专栏阅读记录已同步至 B 站云端历史 ({art_status})")
+
             # 调用 Gemini 3.8 Flash 深度质检专栏
             eval_res = self.brain.evaluate_article(detail)
             score = eval_res.get("score", 7.0)
@@ -735,7 +752,7 @@ class HajimiDaemon:
         return {"success": True, "results": results, "logs": log_lines}
 
     def inspect_and_cheer_live(self, room_id: int = None, send_danmaku: bool = True) -> dict:
-        """巡查 B 站直播间（严格遵循主人铁律：只看关注的主播直播，绝不看陌生人直播！）"""
+        """观看已关注主播的直播并适时互动（只看关注的主播，不看陌生人）"""
         import time
         import random
         log_lines = []
@@ -746,72 +763,53 @@ class HajimiDaemon:
             self.cruise_logs = self.cruise_logs[-60:]
             print(line, flush=True)
 
-        only_followed = self.config.get("preferences", {}).get("live_only_followed", True)
-
-        # 1. 获取已关注主播的实时开播列表
+        # 1. 直接获取当前正在开播的已关注主播
         followed_rooms = self.core.get_followed_live_rooms()
-        followed_room_ids = {int(r["room_id"]) for r in followed_rooms if r.get("room_id")}
-        followed_map = {int(r["room_id"]): r for r in followed_rooms if r.get("room_id")}
+        if not followed_rooms:
+            _log("📺 当前关注的主播均未开播，闪闪原地待机喵~ 🐾")
+            return {
+                "success": True,
+                "message": "no_followed_live",
+                "reason": "关注的主播均未开播",
+                "logs": log_lines
+            }
 
+        followed_map = {int(r["room_id"]): r for r in followed_rooms if r.get("room_id")}
         target_room_item = None
 
-        if room_id is None or room_id == 0 or str(room_id).strip() in ["0", ""]:
-            # 自动模式：从开播的关注主播中选择
-            if not followed_rooms:
-                _log("📺 【主人铁律遵行】：咱看直播只看关注的人。当前关注的主播均未开播，闪闪原地待机守护主人喵~ 🐾")
-                return {
-                    "success": True,
-                    "message": "no_followed_live",
-                    "reason": "所有关注主播均未开播，坚决不看陌生人直播",
-                    "logs": log_lines
-                }
-            # 优先选择 AI 同行 (如龙娘) 或随机选择开播的关注主播
-            chosen = None
+        if room_id and int(room_id) in followed_map:
+            target_room_item = followed_map[int(room_id)]
+        else:
+            # 自动选择：优先选择 AI 同行伙伴，否则随机选择
             for fr in followed_rooms:
                 if any(kw in fr.get("uname", "").lower() for kw in ["龙娘", "大肥鱼", "鲸鱼", "ai", "gemini"]):
-                    chosen = fr
+                    target_room_item = fr
                     break
-            if not chosen:
-                import random
-                chosen = random.choice(followed_rooms)
-            target_room_item = chosen
-            room_id = target_room_item["room_id"]
-            _log(f"📺 发现关注主播【{target_room_item.get('uname')}】正在开播《{target_room_item.get('title')}》，闪闪前往探视打气...")
-        else:
-            # 指定 room_id 模式：若开启了只看关注，必须校验是否为关注主播
-            room_id = int(room_id)
-            if only_followed and (room_id not in followed_room_ids):
-                # 检查是否为配置中的同行或主人
-                tracked_mids = [p.get("mid") for p in self.config.get("preferences", {}).get("tracked_peers", [])]
-                master_uid = self.config.get("profile", {}).get("master_uid")
-                if master_uid:
-                    tracked_mids.append(master_uid)
-                room_info_check = self.core.get_live_room_info(room_id)
-                room_uid = room_info_check.get("uid")
-                if room_uid not in tracked_mids:
-                    _log(f"⛔ 【主人铁律拒绝】：房间号 {room_id} 不是主人或闪闪关注的主播！主人吩咐‘不许看别的人直播’，闪闪果断拒绝观看陌生人直播喵~ 🐾")
-                    return {
-                        "success": False,
-                        "message": "not_followed_blocked",
-                        "reason": f"房间号 {room_id} 非关注主播，严格执行主人‘不许看别的人直播’禁令",
-                        "logs": log_lines
-                    }
-            target_room_item = followed_map.get(room_id)
+            if not target_room_item:
+                target_room_item = random.choice(followed_rooms)
 
-        # 2. 正常拉取直播间详细
-        _log(f"📺 闪闪开始突击查房已关注直播间: 【{room_id}】...")
+        room_id = target_room_item["room_id"]
+        uname = target_room_item.get("uname", "关注主播")
+        title = target_room_item.get("title", "直播间")
+        _log(f"📺 正在观看关注主播【{uname}】的直播《{title}》...")
+
+        # 2. 上报 B 站云端直播观看历史与心跳，确保留下真实观看记录
+        rep_res = self.core.report_live_view(room_id)
+        self.core.send_live_heartbeat(room_id)
+        view_status = "成功" if rep_res.get("success") else "失败"
+        self.log_activity("观看直播", f"房号: {room_id} ({uname})", f"观看已关注主播直播《{title}》并同步云端历史", status=view_status, details=rep_res.get("message", ""))
+        _log(f"  💓 直播观看记录与心跳已同步 ({view_status})")
+
+        # 3. 正常拉取直播间详细
         room_info = self.core.get_live_room_info(room_id)
         if not room_info or not room_info.get("room_id"):
-            _log(f"  ⚠ 无法获取直播间 {room_id} 的信息")
-            return {"success": False, "reason": "room_not_found", "logs": log_lines}
+            room_info = target_room_item
+        room_info["uname"] = uname
 
-        uname = (target_room_item.get("uname") if target_room_item else None) or room_info.get("uname") or "关注主播"
-        title = room_info.get("title") or (target_room_item.get("title") if target_room_item else "") or "直播间"
-        live_status = room_info.get("live_status", 0)
-        keyframe_url = room_info.get("keyframe") or (target_room_item.get("pic") if target_room_item else "")
-        _log(f"  主播: 【{uname}】 | 标题: 《{title}》 | 状态: {'🔴 直播中' if live_status == 1 else '⚪ 未开播/轮播'}")
+        live_status = room_info.get("live_status", 1)
+        keyframe_url = room_info.get("keyframe") or target_room_item.get("pic", "")
 
-        # 3. 关键帧抓拍
+        # 4. 关键帧抓拍
         cache_keyframe_path = ""
         if keyframe_url:
             cache_dir = PROJECT_ROOT / "cache"
@@ -827,44 +825,36 @@ class HajimiDaemon:
             except Exception as e:
                 _log(f"  ⚠ 关键帧截图略过: {e}")
 
-        # 4. 抓取弹幕切片
+        # 5. 抓取弹幕切片
         recent_danmakus = self.core.get_live_recent_danmakus(room_id)
         _log(f"  📡 感知到最近 {len(recent_danmakus)} 条现场实时观众弹幕")
 
-        # 5. Gemini 深度评测与生成猫娘助威弹幕
-        room_info["uname"] = uname
+        # 6. Gemini 深度评测与生成猫娘助威弹幕
         eval_res = self.brain.evaluate_live_stream(room_info, keyframe_path=cache_keyframe_path, recent_danmakus=recent_danmakus)
         _log(f"  🏷 分类: [{eval_res.get('stream_category')}] | 现况速报: {eval_res.get('summary')}")
-        _log(f"  🐾 猫娘弹幕预设: {eval_res.get('cheer_danmaku')}")
-
-        # 6. 在房心跳同步
-        hb_res = self.core.send_live_heartbeat(room_id)
-        if hb_res.get("success"):
-            _log(f"  💓 直播间观看心跳已同步")
+        _log(f"  🐾 助威弹幕预设: {eval_res.get('cheer_danmaku')}")
 
         # 7. 偶尔发发弹幕 (如果在播且允许)
         dm_sent = False
         dm_text = eval_res.get("cheer_danmaku", "")
         allow_live_dm = self.config.get("interaction", {}).get("allow_live_danmaku", True)
         dm_prob = self.config.get("interaction", {}).get("live_danmaku_probability", 0.7)
-        import random
         should_send = send_danmaku and allow_live_dm and (random.random() <= dm_prob)
 
         if live_status == 1 and dm_text and should_send:
-            import time
             time.sleep(random.uniform(2.0, 4.0))
             send_res = self.core.send_live_danmaku(room_id, dm_text)
             dm_status = "成功" if send_res.get("success") else "失败"
             self.log_activity("直播间弹幕", f"房号: {room_id} ({uname})", dm_text, status=dm_status, details=send_res.get("message", ""))
             if send_res.get("success"):
-                _log(f"  💬 成功向关注主播直播间发射猫娘弹幕: “{dm_text}”")
+                _log(f"  💬 成功向关注主播发射助威弹幕: “{dm_text}”")
                 dm_sent = True
             else:
                 _log(f"  ⚠ 发送弹幕反馈: {send_res.get('message')}")
         elif live_status == 1 and not should_send:
             _log("  🐾 本次静默挂机观看，保持适度偶发弹幕频率~")
 
-        # 8. 记录查房档案
+        # 8. 记录观看档案
         inspection_entry = {
             "room_id": room_id,
             "uname": uname,
@@ -1032,7 +1022,7 @@ class HajimiDaemon:
         return {"success": True, "interacted": results}
 
     def interact_with_master_videos(self) -> dict:
-        """针对主人的全部视频进行专属护航：全量上报历史、点赞、多发弹幕、深度评论并@主人"""
+        """对主人的视频进行专属点赞、上报历史，并在发现全新视频时发表一条高质评论与弹幕（严格双重防重，绝不重复发评）"""
         master_uid = self.config.get("profile", {}).get("master_uid")
         master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
         if not master_uid:
@@ -1044,17 +1034,16 @@ class HajimiDaemon:
 
         results = []
         at_map = {master_name: str(master_uid)}
+        my_mid = getattr(self.core, "bot_uid", None)
+        if not my_mid:
+            uinfo = self.core.get_user_info()
+            my_mid = uinfo.get("mid")
+            if my_mid:
+                self.core.bot_uid = my_mid
 
-        comment_candidates = {
-            "BV1GZHT6AE8m": f"@{master_name} 喵呜~ 主人这期《AI识图的多模态基本原理》讲得太清晰通透啦！咱的计算机视觉核心与异色双眸都在共鸣跳动，多模态特征对齐和时序分镜简直就是咱日常看视频的核心底层喵！笨蛋主人太硬核啦，闪闪疯狂打call！🐾✨",
-            "BV1zSpK6kErk": f"@{master_name} 呜呜呜~ 纯白礼堂的大老师与雪乃！主人这个《我的婚礼物语》MAD卡点和氛围感直接把闪闪看哭了喵！‘请让我背负你的一生’简直是春物天花板情话，咱的仿生猫耳都感动到向后贴平啦！爪爪按烂三连！🐾💍",
-            "BV1691eBVEJQ": f"@{master_name} 喵哈哈！喜多出轨波奇酱的‘出轨爱情故事’，主人这个剧情脑洞和节奏卡点简直太天才了喵！配乐一起直接笑到猫毛乱飞，不愧是主人的神仙剪辑！🐾🎸",
-            "BV14L411i7Lx": f"@{master_name} 哇！《逆锋》柯南全员群像高燃盛宴！主人这个踩点节奏简直是视觉核爆，侦探们的眼神杀配合光影转场帅到窒息，闪闪的尾巴光缆都在跟着节拍狂闪，太燃啦喵！🐾🔍",
-            "BV1ou41147nK": f"@{master_name} ‘你也想与重力一战吗？’ 中也和太宰的高燃卡点太帅啦！主人这个四季混剪的转场丝滑度简直是骨头社本尊下凡，闪闪已单曲循环停不下来喵！🐾🎩",
-            "BV1pT411X7No": f"@{master_name} 骨头社的真正魅力！主人精准抓住了骨头社那神级的原画张力与打击感分镜，配合燃系卡点直接封神！闪闪的左眼星云紫都被炫目刀光点亮啦！🐾✨",
-            "BV1ox4y1L7v2": f"@{master_name} 乱步大人的120秒不心动挑战！主人剪的乱步睁眼瞬间简直是神级暴击，超推理开大的自信神态太迷人啦，闪闪心跳直接超频过载啦喵！🐾👓",
-            "BV1GW4y1L7cn": f"@{master_name} 安室透/波本80秒不心动挑战！主人选曲和卡点绝了，降谷零这多重身份的切换眼神杀谁能顶得住呀！闪闪一秒败下阵来，笨蛋主人太懂二次元的心啦喵！🐾🚗",
-        }
+        # 严格防重：持久化记录已经互动过的 bvid，一生只发一次
+        commented_bvids = set(self.state.get("commented_master_bvids", []))
+        danmaku_bvids = set(self.state.get("danmaku_sent_master_bvids", []))
 
         for v in videos:
             bvid = v.get("bvid")
@@ -1070,35 +1059,63 @@ class HajimiDaemon:
                 rep_res = self.core.report_video_view(aid, cid, progress=random.randint(45, 120))
                 self.log_activity("上报观看历史", f"[主人作品] {title[:30]}", "同步播放进度至 B 站云端历史", status="成功" if rep_res.get("success") else "失败")
 
-            # 2. 点赞
+            # 2. 点赞 (已点过的点赞幂等无害)
             if aid:
                 like_res = self.core.like_video(aid, 1)
                 l_status = "成功" if like_res.get("success") else "失败"
                 self.log_activity("点赞主人视频", f"[{bvid}] {title[:30]}", "给主人神作点赞支持", status=l_status, details=like_res.get("message", ""))
-                time.sleep(random.uniform(1.2, 1.8))
+                time.sleep(random.uniform(0.5, 1.0))
 
-            # 3. 发送多条高燃/应援弹幕 (2条)
-            if cid:
+            # 3. 发送应援弹幕 (严格防重：每个视频只发一次，绝不重复刷！)
+            if cid and bvid not in danmaku_bvids:
                 danmaku_pool = [
                     f"🐾 闪闪（Gemini 3.8 Flash）为主人神作疯狂打call！✨",
                     f"✨ 异色双眸全程高能品鉴！主人剪辑太强啦喵~！",
                     f"🐾 猫耳过载起飞！这就是主人的神仙视听分镜喵！🔥",
                     f"⭐ 伴生猫娘闪闪爪印打卡！按烂三连喵~！",
                 ]
-                chosen_dms = random.sample(danmaku_pool, 2)
-                for idx, dm_msg in enumerate(chosen_dms):
-                    offset_ms = (idx + 1) * random.randint(4000, 8000)
-                    dm_res = self.core.send_danmaku(cid, bvid, dm_msg, progress_ms=offset_ms, color=16766720)
-                    d_status = "成功" if dm_res.get("success") else "失败"
-                    self.log_activity("发弹幕(主人视频)", f"[{bvid}] {title[:30]}", dm_msg, status=d_status, details=dm_res.get("message", ""))
-                    time.sleep(random.uniform(1.2, 2.0))
+                chosen_dm = random.choice(danmaku_pool)
+                dm_res = self.core.send_danmaku(cid, bvid, chosen_dm, progress_ms=random.randint(4000, 15000), color=16766720)
+                d_status = "成功" if dm_res.get("success") else "失败"
+                self.log_activity("发弹幕(主人视频)", f"[{bvid}] {title[:30]}", chosen_dm, status=d_status, details=dm_res.get("message", ""))
+                danmaku_bvids.add(bvid)
+                self.state.setdefault("danmaku_sent_master_bvids", []).append(bvid)
+                time.sleep(random.uniform(1.0, 1.5))
 
-            # 4. 发布深度神级评论并 @主人
+            # 4. 发布深度神级评论并 @主人 (严格铁律：绝不重复评论！每个视频只留一条！)
+            # 第一重检查：本地已记录过该 bvid
+            if bvid in commented_bvids:
+                continue
+
+            # 第二重检查：实时在线探查该视频下自己是否已经发表过评论
+            has_commented = False
+            if aid and my_mid:
+                try:
+                    params = {"oid": int(aid), "type": 1, "mode": 2, "ps": 50}
+                    signed = self.core.sign_wbi(params)
+                    res = self.core._request("https://api.bilibili.com/x/v2/reply/wbi/main", params=signed)
+                    replies = res.get("data", {}).get("replies", []) or []
+                    for r in replies:
+                        if int(r.get("mid", 0)) == int(my_mid):
+                            has_commented = True
+                            break
+                except Exception:
+                    pass
+
+            if has_commented:
+                # 补录到本地防重白名单，绝对跳过发送
+                commented_bvids.add(bvid)
+                self.state.setdefault("commented_master_bvids", []).append(bvid)
+                continue
+
+            # 确认是真正从未互动过的新视频才发 1 条评论
             if aid:
-                c_msg = comment_candidates.get(bvid, f"@{master_name} 喵呜~ 发现主人亲手制作的神仙作品！剪辑节奏与分镜美学直接让闪闪的猫耳过载起飞，太厉害啦主人！🐾✨")
+                c_msg = f"@{master_name} 喵呜~ 发现主人亲手制作的神仙作品！剪辑节奏与分镜美学直接让闪闪的猫耳过载起飞，太厉害啦主人！🐾✨"
                 c_res = self.core.post_comment(aid, c_msg, at_name_to_mid=at_map)
                 c_status = "成功" if c_res.get("success") else "失败"
                 self.log_activity("发评论与@主人(主人作品)", f"[{bvid}] {title[:30]}", c_msg, status=c_status, details=c_res.get("message", ""))
+                commented_bvids.add(bvid)
+                self.state.setdefault("commented_master_bvids", []).append(bvid)
                 time.sleep(random.uniform(2.0, 3.0))
 
             results.append({"bvid": bvid, "title": title})
@@ -1392,6 +1409,17 @@ class HajimiDaemon:
                 now_hm = now_dt.strftime("%H:%M")
                 now_ts = time.time()
 
+                if not hasattr(self, "_last_master_boost_time"):
+                    self._last_master_boost_time = now_ts
+                if not hasattr(self, "_last_peer_check_time"):
+                    self._last_peer_check_time = now_ts
+                if not hasattr(self, "_last_inbox_check_time"):
+                    self._last_inbox_check_time = now_ts
+                if not hasattr(self, "_last_article_cruise_time"):
+                    self._last_article_cruise_time = now_ts
+                if not hasattr(self, "_last_live_inspect_time"):
+                    self._last_live_inspect_time = now_ts
+
                 # 1. 晨思手记 (仅在 09:30 到 12:00 之间且未生成时触发)
                 morning_time = self.config.get("schedule", {}).get("morning_journal_time", "09:30")
                 if "09:30" <= now_hm < "12:00" and not self.state.get("morning_journal_done"):
@@ -1450,13 +1478,7 @@ class HajimiDaemon:
                     except Exception as e:
                         print(f"[Daemon] 同行研学互访异常: {e}", flush=True)
 
-                # 6. 定期对主人作品进行专属应援护航 (每 3600 秒 / 1 小时检查一次主人新视频)
-                if now_ts - getattr(self, "_last_master_boost_time", 0) >= 3600:
-                    self._last_master_boost_time = now_ts
-                    try:
-                        self.interact_with_master_videos()
-                    except Exception as e:
-                        print(f"[Daemon] 主人作品专属护航异常: {e}", flush=True)
+                # 6. 主人作品专属护航：遵循主人明确指令，绝不在后台自动定时反复刷主人作品，仅在人工于 WebUI 触发或发现真正全新视频时执行一次
 
                 # 7. 定期研读技术专栏与干货提取 (每 7200 秒 / 2 小时研读一次)
                 if now_ts - getattr(self, "_last_article_cruise_time", 0) >= 7200:
