@@ -117,7 +117,20 @@
         "name": "ChatGPT龙娘在运营",
         "mid": 369335
       }
-    ]
+    ],
+    "article_keywords": [
+      "大模型原理",
+      "Transformer架构",
+      "二次元动漫深度解析",
+      "Python硬核实战",
+      "强化学习算法",
+      "文豪野犬剧情解析"
+    ],
+    "tracked_live_rooms": [
+      6,
+      27771577
+    ],
+    "live_only_followed": true
   },
   "schedule": {
     "active_windows": [
@@ -157,11 +170,21 @@
     "at_score_threshold": 8.0,
     "allow_comment": true,
     "allow_private_message": true,
-    "allow_like": false,
+    "allow_like": true,
     "allow_coin": false,
-    "allow_fav": false,
+    "allow_fav": true,
     "comment_style": "双子猫娘口吻+犀利提炼+@主人",
-    "allow_danmaku": true
+    "allow_danmaku": true,
+    "max_master_pms_per_day": 3,
+    "master_pm_score_threshold": 8.8,
+    "allow_article_like": true,
+    "allow_article_comment": true,
+    "allow_live_danmaku": true,
+    "live_danmaku_probability": 0.7,
+    "like_score_threshold": 8.0,
+    "max_likes_per_day": 15,
+    "fav_score_threshold": 9.0,
+    "max_favs_per_day": 5
   },
   "risk_control": {
     "min_request_interval_ms": 3500,

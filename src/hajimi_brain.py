@@ -379,6 +379,154 @@ class HajimiBrain:
         except Exception:
             return {}
 
+    def evaluate_article(self, article_data: dict) -> dict:
+        """针对 B 站专栏/文章 (cv / opus) 进行深度技术质检与审美评估"""
+        title = article_data.get("title", "")
+        author_name = article_data.get("author_name", "未知作者")
+        content = article_data.get("content", "")
+        cvid = article_data.get("cvid") or str(article_data.get("id", ""))
+        stat = article_data.get("stat", {})
+        view = stat.get("view", 0)
+        like = stat.get("like", 0)
+
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 8.0)
+
+        # 专栏文章篇幅适配（最多支持 10000 字）
+        if len(content) <= 10000:
+            content_body = content
+        else:
+            head = content[:4000]
+            mid_start = len(content) // 2 - 1500
+            mid = content[mid_start:mid_start+3000]
+            tail = content[-3000:]
+            content_body = f"{head}\n\n...[中段技术推导/代码实现]...\n\n{mid}\n\n...[尾部工程实践/总结]...\n\n{tail}"
+
+        prompt = f"""以下是你的角色人设，请严格入戏：
+{self.persona}
+
+---
+【主人信息】
+称呼主人为: {master_name}
+触发在评论区 @主人的分数阈值: {at_threshold} 分
+
+【研读任务】
+你正在研读一篇 B 站技术专栏/长文，请以傲娇但极度博学、专业深邃的赛博猫娘（Gemini 3.8 Flash）视角进行全方位质检与深度技术评析。
+
+【专栏基本信息】
+- 标题: {title}
+- 作者: {author_name}
+- 专栏CV号/ID: {cvid}
+- 浏览量: {view} | 点赞量: {like}
+
+【专栏正文与代码实现（字数：{len(content)} 字符）】
+{content_body}
+
+---
+【专栏专属质检铁律（核心：理论深不深、代码真不真、对主人有无实质启发）】
+1. **理论深度与推导逻辑（权重 40%）**：
+   - 考察是否有底层数学推导、算法原理拆解、系统架构图或边界条件分析。
+   - 严厉打击“纯营销导流、套皮洗稿、只贴几个名词概念却无实操细节”的营销号水文，凡是泛水引流文一律打低分（<= 5.0分）！
+2. **工程落地与代码实践（权重 35%）**：
+   - 考察是否包含可运行的代码示例、关键配置、压测基准、踩坑与调优经验。
+3. **表达逻辑与知识增量（权重 25%）**：
+   - 排版是否层次分明、术语使用是否精准。
+   - 提炼出对主人极具启发的技术要点。
+
+【输出要求】
+必须严格输出以下合法的纯 JSON 格式：
+{{
+  "score": 8.8,
+  "verdict": "一句话判定，如 [硬核架构/学术精读/工程实操/营销引流]",
+  "technical_depth": "1-2句专业深邃点评其技术深度、理论推导或代码落地价值",
+  "knowledge_nugget": "【专栏技术科普与干货小贴士】用3-4句话通俗硬核地向主人科普文章的核心技术原理/算法公式/工程实操经验",
+  "highlight": "一句话概括全篇最大技术亮点或核心结论",
+  "reasons": ["硬核理论", "完整代码", "架构清晰"],
+  "cat_comment": "赛博猫娘傲娇/灵动的品鉴评语（带猫猫拟声词或emoji，如 🐾、✨）",
+  "comment_with_at": "@{master_name} 喵呜~ 开头必须@主人！以专业AI同伴视角向专栏作者探讨具体技术细节，同时向主人安利这篇文章的精妙之处（60-120字）"
+}}
+直接输出 JSON，严禁其他解释文本。
+"""
+        raw = self.call_gemini(prompt, timeout=40).strip()
+        data = self._parse_json_result(raw)
+
+        # 默认兜底
+        if not data or "score" not in data:
+            data = {
+                "score": 7.5,
+                "verdict": "[技术解析]",
+                "technical_depth": "文章对核心流程进行了基本梳理，逻辑结构较为清晰。",
+                "knowledge_nugget": f"《{title}》主要探讨了相关技术实现路径，为工程开发提供了参考范式。",
+                "highlight": "提供了较为清晰的技术概念阐释与流程指引。",
+                "reasons": ["技术解析", "逻辑清晰"],
+                "cat_comment": "喵呜~ 这篇专栏本猫娘嗅了嗅，虽然没有太深奥的公式，但知识脉络还算顺畅喵！🐾",
+                "comment_with_at": f"@{master_name} 喵呜~ 主人快来研读这篇《{title[:25]}》！文章梳理的架构细节很有启发，闪闪在作者的推导逻辑里嗅到了干货小鱼干的气息喵~ 🐾✨"
+            }
+        return data
+
+    def evaluate_live_stream(self, room_info: dict, keyframe_path: str = "", recent_danmakus: list = None) -> dict:
+        """针对 B 站直播间进行多模态视觉审视、弹幕感知与猫娘互动生成"""
+        title = room_info.get("title", "未命名直播间")
+        uname = room_info.get("uname") or room_info.get("anchor_name", "主播")
+        room_id = room_info.get("room_id", 0)
+        area_name = room_info.get("area_name", "综合")
+        parent_area_name = room_info.get("parent_area_name", "")
+        online = room_info.get("online", 0)
+        live_status = room_info.get("live_status", 0)
+
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+
+        # 弹幕样本
+        dm_block = ""
+        if recent_danmakus:
+            samples = [f"- {d.get('uname', '观众')}: {d.get('text', '')}" for d in recent_danmakus[-8:]]
+            dm_block = "【现场实时弹幕切片】\n" + "\n".join(samples) + "\n\n"
+
+        visual_block = ""
+        if keyframe_path and os.path.exists(keyframe_path):
+            visual_block = f"【直播间实时抓拍关键帧截图】: 已保存至本地图片文件 {keyframe_path}，请调动视觉能力感知画面正在进行的内容（如游戏实战、写代码、自习、绘画等）。\n\n"
+
+        prompt = f"""以下是你的角色人设：
+{self.persona}
+
+---
+【主人信息】
+称呼主人为: {master_name}
+
+【任务】
+你正在巡查 B 站的一个直播间。请结合直播间分区、标题、实时抓拍截图与弹幕流，生成现场速报与猫娘弹幕。
+
+【直播间信息】
+- 房间号: {room_id}
+- 主播: {uname}
+- 标题: {title}
+- 分区: {parent_area_name} - {area_name}
+- 实时人气/在线: {online}
+- 直播状态: {"直播中" if live_status == 1 else "未开播/轮播"}
+
+{visual_block}{dm_block}
+---
+【要求】
+以纯 JSON 格式输出：
+{{
+  "stream_category": "直播类型，如 编程/游戏实况/自习考研/二次元绘画/聊天电台",
+  "summary": "30-60字概括现场画面在干什么、气氛如何",
+  "cheer_danmaku": "准备发送到直播间的猫娘弹幕（15-25字以内，带猫爪emoji如🐾/⚡，积极友善、带二次元猫娘活力，严禁任何违规或刷屏）",
+  "cat_report_to_master": "向主人汇报查房战况的俏皮猫娘私信汇报（30-60字）"
+}}
+直接输出 JSON，严禁其他解释文本。
+"""
+        raw = self.call_gemini(prompt, timeout=25).strip()
+        data = self._parse_json_result(raw)
+        if not data or "cheer_danmaku" not in data:
+            data = {
+                "stream_category": area_name or "综合直播",
+                "summary": f"主播【{uname}】正在进行《{title[:20]}》直播，现场气氛活跃。",
+                "cheer_danmaku": f"🐾 赛博猫娘闪闪路过打卡！主播加油冲冲冲喵~⚡",
+                "cat_report_to_master": f"喵呜~ 主人！闪闪刚刚巡逻突击了【{uname}】的直播间《{title[:18]}》，现场好热闹，闪闪已经留下猫爪印啦喵~ 🐾✨"
+            }
+        return data
+
     def generate_morning_journal(self, stamina: int, targets: list[str]) -> str:
         master_name = self.config.get("profile", {}).get("master_name", "主人")
         zones = ", ".join(targets if targets else ["科技", "数码", "极客"])

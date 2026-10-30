@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 赛博哈基米 (Cyber-Hajimi) - B 站底层通信与感知执行核心
 - 官方 OAuth 二维码扫码登录与凭证自动维护
@@ -331,7 +331,7 @@ class BiliHajimiCore:
         except Exception as e:
             return {"status": "error", "code": -1, "message": str(e)}
 
-    def get_user_info(self, cache_ttl: int = 60) -> dict:
+    def get_user_info(self, cache_ttl: int = 300) -> dict:
         now = time.time()
         if hasattr(self, "_user_info_cache") and self._user_info_cache and (now - getattr(self, "_user_info_cached_at", 0) < cache_ttl):
             return self._user_info_cache
@@ -611,6 +611,11 @@ class BiliHajimiCore:
         }
 
     # ==================== 评论与社区互动 ====================
+    def get_video_comments(self, aid: int, page_size: int = 10) -> dict:
+        """兼容接口：获取视频评论列表"""
+        hot = self.get_video_hot_comments(aid, count=page_size)
+        return {"replies": [{"rpid": h["rpid"], "member": {"uname": h["uname"], "mid": 0}, "content": {"message": h["message"]}} for h in hot]}
+
     def get_video_hot_comments(self, aid: int, count: int = 6) -> list[dict]:
         """通过 WBI 验签抓取视频最热门的高赞社区评论与核心讨论点"""
         if not aid:
@@ -728,6 +733,95 @@ class BiliHajimiCore:
         else:
             return {"success": False, "message": resp.get("message", "点赞失败"), "code": code}
 
+
+    def report_video_heartbeat(self, aid: int, cid: int, bvid: str, played_time: int = 60) -> dict:
+        """上报视频播放心跳包，让视频真实记录在 B 站云端历史记录中"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        my_uid = self.config.get("auth", {}).get("dedeuserid", "")
+        if not aid or not cid or not bvid:
+            return {"success": False, "message": "缺少必要参数"}
+        url = "https://api.bilibili.com/x/click-interface/web/heartbeat"
+        now_ts = int(time.time())
+        p_time = max(30, int(played_time))
+        data = {
+            "aid": aid,
+            "bvid": bvid,
+            "cid": cid,
+            "mid": my_uid,
+            "csrf": csrf,
+            "played_time": p_time,
+            "real_played_time": p_time,
+            "realtime": p_time,
+            "start_ts": now_ts - p_time - 5,
+            "type": 3,
+            "sub_type": 0,
+            "dt": 2,
+            "play_type": 0
+        }
+        resp = self._request(url, method="POST", data=data, headers={"Referer": f"https://www.bilibili.com/video/{bvid}"})
+        if resp.get("code") == 0:
+            return {"success": True, "message": "播放心跳上报成功，已写入历史记录"}
+        return {"success": False, "message": resp.get("message", "心跳上报失败")}
+
+    def get_user_fav_folders(self) -> list[dict]:
+        """拉取当前登录用户创建的所有收藏夹列表"""
+        my_uid = self.config.get("auth", {}).get("dedeuserid", "")
+        if not my_uid:
+            return []
+        url = f"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={my_uid}"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            data = resp.get("data")
+            if isinstance(data, dict):
+                return data.get("list", [])
+            elif isinstance(data, list):
+                return data
+        return []
+
+    def create_fav_folder(self, title: str, intro: str = "", privacy: int = 0) -> dict:
+        """自主创建新收藏夹"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "缺少 csrf 凭据"}
+        url = "https://api.bilibili.com/x/v3/fav/folder/add"
+        data = {
+            "title": title,
+            "intro": intro or "闪闪与主人共同精选沉淀的宝藏分类收藏夹🐾",
+            "privacy": privacy,
+            "csrf": csrf
+        }
+        resp = self._request(url, method="POST", data=data, headers={"Referer": "https://space.bilibili.com/"})
+        if resp.get("code") == 0:
+            fid = resp.get("data", {}).get("id")
+            return {"success": True, "folder_id": fid, "title": title}
+        return {"success": False, "message": resp.get("message", "创建收藏夹失败")}
+
+    def is_video_favoured(self, aid: int) -> bool:
+        """检查当前视频是否已收藏"""
+        url = f"https://api.bilibili.com/x/v2/fav/video/favoured?aid={aid}"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return bool(resp.get("data", {}).get("favoured", False))
+        return False
+
+    def add_video_to_fav(self, aid: int, folder_id: int, bvid: str = "") -> dict:
+        """将视频精准收藏至指定收藏夹"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "缺少 csrf 凭据"}
+        url = "https://api.bilibili.com/x/v3/fav/resource/deal"
+        ref = f"https://www.bilibili.com/video/{bvid}" if bvid else f"https://www.bilibili.com/video/av{aid}"
+        data = {
+            "rid": aid,
+            "type": 2,
+            "add_media_ids": str(folder_id),
+            "del_media_ids": "",
+            "csrf": csrf
+        }
+        resp = self._request(url, method="POST", data=data, headers={"Referer": ref})
+        if resp.get("code") == 0:
+            return {"success": True, "message": "收藏成功"}
+        return {"success": False, "message": resp.get("message", "收藏失败")}
     def send_danmaku(self, cid: int, bvid: str, message: str, progress_ms: int = 3000, color: int = 16766720) -> dict:
         """在指定时间戳发送弹幕 (color 默认为闪闪的金色 16766720)"""
         csrf = self.config.get("auth", {}).get("bili_jct", "")
@@ -995,6 +1089,288 @@ class BiliHajimiCore:
             return {"success": False, "message": resp.get("message", "发布动态失败"), "code": resp.get("code")}
         except Exception as e:
             return {"success": False, "message": f"发布动态异常: {e}"}
+
+
+    # ==========================================
+    # 专栏文章 (Articles / Columns) 模块
+    # ==========================================
+    def search_articles(self, keyword: str, page: int = 1, order: str = "click") -> list[dict]:
+        """搜索专栏文章列表"""
+        url = "https://api.bilibili.com/x/web-interface/search/type"
+        params = {"search_type": "article", "keyword": keyword, "order": order, "page": page}
+        res = self._request(url, params=params)
+        if res.get("code") == 0:
+            result = res.get("data", {}).get("result", [])
+            articles = []
+            for item in result:
+                art_id = item.get("id") or item.get("mid")
+                title = re.sub(r'<[^>]+>', '', item.get("title", ""))
+                desc = re.sub(r'<[^>]+>', '', item.get("desc", ""))
+                articles.append({
+                    "id": art_id,
+                    "cvid": f"cv{art_id}",
+                    "title": title,
+                    "desc": desc,
+                    "author": item.get("author", "未知作者"),
+                    "mid": item.get("mid", 0),
+                    "view": item.get("view", 0),
+                    "like": item.get("like", 0),
+                    "reply": item.get("reply", 0),
+                    "image_urls": item.get("image_urls", []),
+                    "publish_time": item.get("pub_time", 0)
+                })
+            return articles
+        return []
+
+    def get_article_detail(self, cvid_or_id) -> dict:
+        """获取专栏文章完整正文、段落、代码块、LaTeX公式与高清插图"""
+        clean_id = str(cvid_or_id).lower().replace("cv", "")
+        url_web = f"https://www.bilibili.com/read/cv{clean_id}/"
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": "https://www.bilibili.com/",
+            "Cookie": self.get_cookie_header()
+        }
+        try:
+            req = urllib.request.Request(url_web, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            return {"success": False, "message": f"拉取专栏页面失败: {e}"}
+
+        init_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*(\{.+?\});", html)
+        if not init_match:
+            return {"success": False, "message": "未在专栏页面中找到状态数据"}
+
+        try:
+            init = json.loads(init_match.group(1))
+            detail = init.get("detail", {})
+            modules = detail.get("modules", [])
+            title, author, mid = "", "", 0
+            stats = {}
+            paragraphs_text = []
+            images = []
+
+            for m in modules:
+                m_type = m.get("module_type")
+                if m_type == "MODULE_TYPE_TITLE":
+                    title = m.get("module_title", {}).get("text", "")
+                elif m_type == "MODULE_TYPE_AUTHOR":
+                    author = m.get("module_author", {}).get("name", "")
+                    mid = m.get("module_author", {}).get("mid", 0)
+                elif m_type == "MODULE_TYPE_STAT":
+                    stats = m.get("module_stat", {})
+                elif m_type == "MODULE_TYPE_CONTENT":
+                    for p in m.get("module_content", {}).get("paragraphs", []):
+                        nodes = []
+                        if isinstance(p.get("text"), dict):
+                            nodes.extend(p.get("text", {}).get("nodes", []))
+                        if isinstance(p.get("heading"), dict):
+                            nodes.extend(p.get("heading", {}).get("nodes", []))
+                        
+                        para_words = []
+                        for n in nodes:
+                            if isinstance(n.get("word"), dict):
+                                w = n.get("word", {}).get("words", "")
+                                if w: para_words.append(w)
+                            elif isinstance(n.get("formula"), dict):
+                                f_latex = n.get("formula", {}).get("latex", "")
+                                if f_latex: para_words.append(f" ${f_latex}$ ")
+                        
+                        if para_words:
+                            paragraphs_text.append("".join(para_words).strip())
+                        
+                        if isinstance(p.get("code"), dict):
+                            code_str = p.get("code", {}).get("code", "")
+                            paragraphs_text.append(f"```\n{code_str}\n```")
+                        
+                        if isinstance(p.get("pic"), dict):
+                            for pic in p.get("pic", {}).get("pics", []):
+                                if pic.get("url"): images.append(pic.get("url"))
+
+            content = "\n\n".join(paragraphs_text)
+            return {
+                "success": True,
+                "id": clean_id,
+                "cvid": f"cv{clean_id}",
+                "title": title,
+                "author": author,
+                "mid": mid,
+                "stats": stats,
+                "content": content,
+                "images": images,
+                "url": url_web
+            }
+        except Exception as e:
+            return {"success": False, "message": f"解析专栏内容异常: {e}"}
+
+    def like_article(self, cvid_or_id) -> dict:
+        """点赞专栏文章"""
+        clean_id = str(cvid_or_id).lower().replace("cv", "")
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf"}
+        url = "https://api.bilibili.com/x/article/like"
+        data = {"id": int(clean_id), "type": 1, "csrf": csrf}
+        res = self._request(url, method="POST", data=data)
+        if res.get("code") in [0, 65006]:
+            return {"success": True, "message": "专栏点赞成功！" if res.get("code") == 0 else "专栏已点过赞"}
+        return {"success": False, "message": res.get("message", "专栏点赞失败"), "code": res.get("code")}
+
+    def send_article_reply(self, cvid_or_id, message: str) -> dict:
+        """在专栏文章发布评论（专栏 reply type 为 12）"""
+        clean_id = str(cvid_or_id).lower().replace("cv", "")
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf"}
+        url = "https://api.bilibili.com/x/v2/reply/add"
+        data = {
+            "oid": int(clean_id),
+            "type": 12,
+            "message": message,
+            "csrf": csrf
+        }
+        res = self._request(url, method="POST", data=data)
+        if res.get("code") == 0:
+            return {"success": True, "message": "专栏评论发布成功！", "rpid": res.get("data", {}).get("rpid")}
+        return {"success": False, "message": res.get("message", "发布专栏评论失败"), "code": res.get("code")}
+
+    # ==========================================
+    # 直播间 (Live Stream) 模块
+    # ==========================================
+    def get_live_room_info(self, room_id: int) -> dict:
+        """获取直播间全景信息、开播状态、实时关键帧截屏"""
+        url = "https://api.live.bilibili.com/room/v1/Room/get_info"
+        res = self._request(url, params={"room_id": room_id})
+        if res.get("code") == 0:
+            data = res.get("data", {})
+            return {
+                "success": True,
+                "room_id": room_id,
+                "uid": data.get("uid"),
+                "title": data.get("title", ""),
+                "live_status": data.get("live_status", 0),
+                "area_name": data.get("area_name", ""),
+                "parent_area_name": data.get("parent_area_name", ""),
+                "online": data.get("online", 0),
+                "attention": data.get("attention", 0),
+                "keyframe": data.get("keyframe", ""),
+                "cover": data.get("user_cover", "") or data.get("cover", ""),
+                "description": data.get("description", "")
+            }
+        return {"success": False, "message": res.get("message", "获取直播间失败")}
+
+    def get_live_room_by_mid(self, mid: int) -> dict:
+        """通过主播/用户 UID 查询其直播间 ID 与开播状态"""
+        url = "https://api.live.bilibili.com/room/v1/Room/getRoomInfoOld"
+        res = self._request(url, params={"mid": mid})
+        if res.get("code") == 0:
+            d = res.get("data", {})
+            return {
+                "success": True,
+                "room_id": d.get("roomid", 0),
+                "live_status": d.get("liveStatus", 0),
+                "url": d.get("url", ""),
+                "title": d.get("title", "")
+            }
+        return {"success": False, "message": res.get("message", "查询主播直播间失败")}
+
+    def get_followed_live_rooms(self, page: int = 1, page_size: int = 20) -> list[dict]:
+        """获取当前正在开播的已关注主播/UP主列表（只看关注的主播！）"""
+        url = "https://api.live.bilibili.com/relation/v1/feed/feed_list"
+        params = {"page": page, "pagesize": page_size}
+        res = self._request(url, params=params)
+        if res.get("code") == 0:
+            raw_list = res.get("data", {}).get("list", []) or []
+            rooms = []
+            for r in raw_list:
+                rooms.append({
+                    "room_id": r.get("roomid"),
+                    "title": r.get("title", ""),
+                    "uname": r.get("uname", "关注主播"),
+                    "uid": r.get("uid"),
+                    "online": r.get("online", 0),
+                    "cover": r.get("cover") or r.get("face", ""),
+                    "pic": r.get("pic", ""),
+                    "link": r.get("link", f"https://live.bilibili.com/{r.get('roomid')}")
+                })
+            return rooms
+        return []
+
+    def get_hot_live_rooms(self, parent_area_id: int = 1, page: int = 1, page_size: int = 10) -> list[dict]:
+        """获取热门直播间列表"""
+        url = "https://api.live.bilibili.com/room/v3/area/getRoomList"
+        params = {
+            "platform": "web",
+            "parent_area_id": parent_area_id,
+            "page": page,
+            "page_size": page_size
+        }
+        res = self._request(url, params=params)
+        if res.get("code") == 0:
+            raw_list = res.get("data", {}).get("list", [])
+            rooms = []
+            for r in raw_list:
+                rooms.append({
+                    "room_id": r.get("roomid"),
+                    "title": r.get("title"),
+                    "uname": r.get("uname"),
+                    "uid": r.get("uid"),
+                    "online": r.get("online", 0),
+                    "area_name": r.get("area_name", ""),
+                    "keyframe": r.get("keyframe", ""),
+                    "cover": r.get("user_cover", "")
+                })
+            return rooms
+        return []
+
+    def get_live_recent_danmakus(self, room_id: int) -> list[dict]:
+        """获取直播间最近的实时弹幕流"""
+        url = f"https://api.live.bilibili.com/ajax/msg?roomid={room_id}"
+        res = self._request(url)
+        if res.get("code") == 0:
+            raw_dms = res.get("data", {}).get("room", [])
+            dms = []
+            for d in raw_dms:
+                dms.append({
+                    "text": d.get("text", ""),
+                    "nickname": d.get("nickname", "热心观众"),
+                    "timeline": d.get("timeline", ""),
+                    "uid": d.get("uid", 0)
+                })
+            return dms
+        return []
+
+    def send_live_danmaku(self, room_id: int, message: str, color: int = 16777215) -> dict:
+        """在指定直播间发送实时打Call弹幕"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf"}
+        url = "https://api.live.bilibili.com/msg/send"
+        data = {
+            "roomid": int(room_id),
+            "msg": message,
+            "color": color,
+            "fontsize": 25,
+            "mode": 1,
+            "rnd": int(time.time()),
+            "csrf": csrf,
+            "csrf_token": csrf
+        }
+        res = self._request(url, method="POST", data=data)
+        if res.get("code") == 0:
+            return {"success": True, "message": "直播弹幕发送成功！"}
+        return {"success": False, "message": res.get("message", "发送直播弹幕失败"), "code": res.get("code")}
+
+    def send_live_heartbeat(self, room_id: int) -> dict:
+        """上报直播间在房心跳（挂机打卡、累积亲密度与经验）"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf"}
+        url = "https://api.live.bilibili.com/relation/v1/feed/heartBeat"
+        data = {"room_id": int(room_id), "csrf": csrf}
+        res = self._request(url, method="POST", data=data)
+        return {"success": res.get("code") == 0, "message": res.get("message", "心跳已上报")}
 
 
 if __name__ == "__main__":

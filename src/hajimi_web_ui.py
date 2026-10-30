@@ -14,7 +14,7 @@ import json
 import time
 import base64
 import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import threading
 
@@ -115,6 +115,10 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 "pm_replied_count_today": daemon_instance.state.get("pm_replied_count_today", 0),
                 "morning_done": daemon_instance.state.get("morning_journal_done", False),
                 "evening_done": daemon_instance.state.get("evening_journal_done", False),
+                "articles_count": len(daemon_instance.state.get("recent_articles", [])),
+                "live_count": len(daemon_instance.state.get("live_inspections", [])),
+                "recent_articles": daemon_instance.state.get("recent_articles", [])[:50],
+                "live_inspections": daemon_instance.state.get("live_inspections", [])[:30],
                 "recent": daemon_instance.state.get("recent_evaluations", [])[:80],
                 "activity_logs": daemon_instance.state.get("activity_logs", [])[:150],
                 "config": daemon_instance.config,
@@ -123,6 +127,10 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 "next_auto_cruise_time": daemon_instance.next_auto_cruise_time,
             }
             self._send_json(resp)
+        elif path == "/api/articles_list":
+            self._send_json({"success": True, "articles": daemon_instance.state.get("recent_articles", [])})
+        elif path == "/api/live_list":
+            self._send_json({"success": True, "inspections": daemon_instance.state.get("live_inspections", [])})
         elif path == "/api/qrcode":
             qr_res = daemon_instance.core.generate_login_qr()
             img_b64 = ""
@@ -292,6 +300,46 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             status = "成功" if res.get("success") else "失败"
             daemon_instance.log_activity("发站内私信(测试)", f"主人UID: {target_uid}", content, status=status, details=res.get("message", ""))
             self._send_json(res)
+
+        elif path == "/api/cruise_articles":
+            kw = payload.get("keyword", "大模型原理")
+            cnt = int(payload.get("count", 2))
+            def _run_art():
+                global is_cruising, cruise_logs_buffer
+                is_cruising = True
+                cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 📰 开启技术专栏深度研学: 主题【{kw}】...")
+                try:
+                    res = daemon_instance.cruise_articles(keyword=kw, count=cnt)
+                    for l in res.get("logs", []):
+                        cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] {l}")
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 专栏研读与跟帖互动达成！")
+                except Exception as e:
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] ⚠ 专栏研读波动: {e}")
+                finally:
+                    is_cruising = False
+            t = threading.Thread(target=_run_art, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": f"已启动技术专栏研读任务：【{kw}】喵~"})
+
+        elif path == "/api/inspect_live":
+            room_id = int(payload.get("room_id", 6))
+            send_danmaku = bool(payload.get("send_danmaku", True))
+            def _run_live():
+                global is_cruising, cruise_logs_buffer
+                is_cruising = True
+                cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 📺 启动直播间查房巡查: 房间号【{room_id}】...")
+                try:
+                    res = daemon_instance.inspect_and_cheer_live(room_id=room_id, send_danmaku=send_danmaku)
+                    for l in res.get("logs", []):
+                        cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] {l}")
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 直播间查房与弹幕互动完成！")
+                except Exception as e:
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] ⚠ 直播间巡查波动: {e}")
+                finally:
+                    is_cruising = False
+            t = threading.Thread(target=_run_live, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": f"已派出闪闪突击查房直播间【{room_id}】喵~"})
 
         elif path == "/api/boost_master":
             def _boost():
@@ -785,6 +833,14 @@ def get_dashboard_html() -> str:
         <span class="nav-icon">📝</span>
         <span>晨思晚读与手记</span>
       </li>
+      <li class="nav-item" onclick="switchTab('tab-articles')">
+        <span class="nav-icon">📰</span>
+        <span>技术专栏研读</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('tab-live')">
+        <span class="nav-icon">📺</span>
+        <span>直播查房哨所</span>
+      </li>
       <li class="nav-item" onclick="switchTab('tab-wardrobe')">
         <span class="nav-icon">👗</span>
         <span>立绘衣橱</span>
@@ -823,6 +879,14 @@ def get_dashboard_html() -> str:
         <span class="stat-label">仿生精力池</span>
         <span id="statStamina" class="stat-val" style="color:#ea580c;">100 / 100</span>
       </div>
+      <div class="stat-pill">
+        <span class="stat-label">今日研读专栏</span>
+        <span id="statArticles" class="stat-val" style="color:#0284c7;">0</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">巡查直播间数</span>
+        <span id="statLive" class="stat-val" style="color:#d97706;">0</span>
+      </div>
       <div class="stat-pill" style="min-width: 220px; border-left: 3px solid #10b981;">
         <span class="stat-label">后台自动巡航状态</span>
         <span id="statAutoStatus" class="stat-val" style="color:#059669; font-size:13px; font-weight:600;">🟢 自动化常驻就绪</span>
@@ -839,6 +903,8 @@ def get_dashboard_html() -> str:
         <div class="header-actions">
           <button class="btn-action" onclick="loadStatus()">🔄 刷新列表</button>
           <button class="btn-action" style="background:#ec4899; color:#fff;" onclick="triggerBoostMaster()">⭐ 一键应援主人作品</button>
+          <button class="btn-action" style="background:#0284c7; color:#fff;" onclick="switchTab('tab-articles')">📰 研读专栏</button>
+          <button class="btn-action" style="background:#d97706; color:#fff;" onclick="switchTab('tab-live')">📺 巡查直播</button>
           <button class="btn-action" style="background:#8b5cf6; color:#fff;" onclick="triggerInteractPeers()">🤝 AI运营同行研学互动</button>
           <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪出击巡航</button>
         </div>
@@ -960,6 +1026,47 @@ def get_dashboard_html() -> str:
     </div>
 
     <!-- Tab 6: 立绘衣橱 -->
+        <!-- Tab 8: 闪闪的技术专栏研读库 -->
+    <div id="tab-articles" class="tab-view">
+      <div class="view-header">
+        <div class="title-block">
+          <h1>📰 闪闪的技术专栏研读画卷</h1>
+          <p class="desc">B 站技术专栏与学术长文深度研学：推导数学公式、分析源码架构、提炼知识小贴士、发表高水准学术探讨长评并艾特主人。</p>
+        </div>
+        <div class="header-actions">
+          <input id="articleKwInput" type="text" placeholder="输入专栏关键词 (如: 大模型原理/Transformer)" value="大模型原理" style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:220px;" />
+          <button class="btn-action" style="background:#0284c7; color:#fff;" onclick="triggerArticleCruiseAction()">🚀 开始研读新专栏</button>
+          <button class="btn-action" onclick="loadStatus()">🔄 刷新列表</button>
+        </div>
+      </div>
+      <div id="articleListContainer">
+        <!-- 动态加载专栏卡片 -->
+        <div style="padding:40px; text-align:center; color:#9ca3af;">正在加载专栏研读记录...</div>
+      </div>
+    </div>
+
+    <!-- Tab 9: 闪闪的直播查房哨所 -->
+    <div id="tab-live" class="tab-view">
+      <div class="view-header">
+        <div class="title-block">
+          <h1>📺 闪闪的直播查房与弹幕哨所</h1>
+          <p class="desc">多模态直播间突击查房：实时捕获现场关键帧抓拍、视觉审视、感知现场弹幕流、同步心跳、发射猫娘打气弹幕并向主人私信速报。</p>
+        </div>
+        <div class="header-actions">
+          <input id="liveRoomInput" type="number" placeholder="直播间房号" value="6" style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:120px;" />
+          <label style="font-size:12.5px; color:#4b5563; display:flex; align-items:center; gap:4px; margin-right:4px;">
+            <input type="checkbox" id="liveDanmakuCheck" checked /> 发送打气弹幕
+          </label>
+          <button class="btn-action" style="background:#d97706; color:#fff;" onclick="triggerLiveInspectAction()">⚡ 立即突击查房</button>
+          <button class="btn-action" onclick="loadStatus()">🔄 刷新记录</button>
+        </div>
+      </div>
+      <div id="liveListContainer">
+        <!-- 动态加载直播查房卡片 -->
+        <div style="padding:40px; text-align:center; color:#9ca3af;">正在加载直播查房记录...</div>
+      </div>
+    </div>
+
     <div id="tab-wardrobe" class="tab-view">
       <div class="view-header">
         <div class="title-block">
@@ -1042,8 +1149,10 @@ def get_dashboard_html() -> str:
     else if (tabId === 'tab-messages') { items[2].classList.add('active'); refreshMessages(); }
     else if (tabId === 'tab-cruise') items[3].classList.add('active');
     else if (tabId === 'tab-journals') { items[4].classList.add('active'); loadJournals(); }
-    else if (tabId === 'tab-wardrobe') { items[5].classList.add('active'); loadGallery(); }
-    else if (tabId === 'tab-gemini') items[6].classList.add('active');
+    else if (tabId === 'tab-articles') items[5].classList.add('active');
+    else if (tabId === 'tab-live') items[6].classList.add('active');
+    else if (tabId === 'tab-wardrobe') { items[7].classList.add('active'); loadGallery(); }
+    else if (tabId === 'tab-gemini') items[8].classList.add('active');
 
     const target = document.getElementById(tabId);
     if (target) target.classList.add('active');
@@ -1113,6 +1222,15 @@ def get_dashboard_html() -> str:
         const elBlack = document.getElementById('cfgKeywordsBlacklist');
         if (elBlack) elBlack.value = (prefs.blacklist_keywords || []).join(', ');
       }
+
+      const elArt = document.getElementById('statArticles');
+      if (elArt) elArt.innerText = data.articles_count || (data.recent_articles ? data.recent_articles.length : 0);
+      const elLive = document.getElementById('statLive');
+      if (elLive) elLive.innerText = data.live_count || (data.live_inspections ? data.live_inspections.length : 0);
+
+      // 渲染专栏卡片与直播卡片
+      renderArticleCards(data.recent_articles || []);
+      renderLiveCards(data.live_inspections || []);
 
       // 渲染视频卡片流 (解决痛点 1)
       renderVideoCards(data.recent || []);
@@ -1482,6 +1600,155 @@ def get_dashboard_html() -> str:
     `).join('');
   }
 
+  function renderArticleCards(articles) {
+    const cont = document.getElementById('articleListContainer');
+    if (!cont) return;
+    if (!articles || articles.length === 0) {
+      cont.innerHTML = '<div style="padding:40px; text-align:center; color:#9ca3af;">暂无技术专栏研读记录，在上方输入技术关键词后点击“开始研读新专栏”即可派闪闪精读专栏！</div>';
+      return;
+    }
+
+    cont.innerHTML = articles.map(item => {
+      const score = item.score || 7.0;
+      let badgeClass = 'mid';
+      if (score >= 8.5) badgeClass = 'high';
+      else if (score <= 5.0) badgeClass = 'low';
+
+      const readUrl = `https://www.bilibili.com/read/cv${item.id || item.cvid}`;
+      return `
+        <div class="eval-card">
+          <div class="eval-header">
+            <a class="eval-title" href="${readUrl}" target="_blank">
+              📰 《${item.title}》 🔗
+            </a>
+            <span class="score-badge ${badgeClass}">★ ${score} 分 [${item.verdict || '技术专栏'}]</span>
+          </div>
+          <div class="eval-meta">
+            <span>✍ 作者: <strong>${item.author || '专栏UP主'}</strong></span>
+            <span>· 专栏ID: cv${item.id || item.cvid}</span>
+            <span>· 浏览: ${item.view || 0}</span>
+            <span>· 点赞: ${item.like || 0}</span>
+            <span>· 研读时间: ${item.read_time || '刚刚'}</span>
+          </div>
+          ${item.technical_depth ? `
+            <div class="eval-knowledge-critique" style="margin-top:8px;">
+              <strong>📚 专栏技术深度与架构脉络点评:</strong> ${item.technical_depth}
+            </div>
+          ` : ''}
+          ${item.knowledge_nugget ? `
+            <div class="eval-knowledge-nugget" style="margin-top:8px;">
+              <strong>💡【专栏技术科普与干货小贴士】:</strong> ${item.knowledge_nugget}
+            </div>
+          ` : ''}
+          ${item.cat_comment ? `
+            <div class="eval-cat-comment" style="margin-top:8px;">
+              <strong>🐾 猫娘品鉴评语:</strong> ${item.cat_comment}
+            </div>
+          ` : ''}
+          ${item.comment_with_at ? `
+            <div class="eval-highlight" style="background:#f0fdf4; border-left:3px solid #22c55e; margin-top:8px;">
+              <strong>💬 专栏评论区互动与@主人交流:</strong> “${item.comment_with_at}”
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderLiveCards(inspections) {
+    const cont = document.getElementById('liveListContainer');
+    if (!cont) return;
+    if (!inspections || inspections.length === 0) {
+      cont.innerHTML = '<div style="padding:40px; text-align:center; color:#9ca3af;">暂无直播间查房记录，在上方输入房号点击“立即突击查房”开始巡查！</div>';
+      return;
+    }
+
+    cont.innerHTML = inspections.map(item => {
+      const isLive = item.live_status === 1;
+      const statusBadge = isLive 
+        ? '<span style="background:#fee2e2; color:#dc2626; padding:3px 8px; border-radius:4px; font-weight:700; font-size:12px;">🔴 直播中</span>'
+        : '<span style="background:#f3f4f6; color:#6b7280; padding:3px 8px; border-radius:4px; font-weight:600; font-size:12px;">⚪ 未开播</span>';
+
+      const liveUrl = `https://live.bilibili.com/${item.room_id}`;
+      const snapHtml = item.keyframe_path ? `
+        <div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid #e5e7eb; max-width:480px;">
+          <a href="${item.keyframe_path}" target="_blank">
+            <img src="${item.keyframe_path}" style="width:100%; display:block; object-fit:cover;" onerror="this.parentElement.parentElement.style.display='none'">
+          </a>
+          <div style="font-size:11.5px; color:#6b7280; padding:4px 8px; background:#f9fafb;">📸 查房瞬间实时快照 🔍 点击在新标签页查看高清原图</div>
+        </div>
+      ` : '';
+
+      return `
+        <div class="eval-card">
+          <div class="eval-header">
+            <a class="eval-title" href="${liveUrl}" target="_blank">
+              📺 直播间【${item.room_id}】《${item.title || '直播间'}》 🔗
+            </a>
+            ${statusBadge}
+          </div>
+          <div class="eval-meta">
+            <span>🎙 主播: <strong>${item.uname || '主播'}</strong></span>
+            <span>· 分区: ${item.stream_category || '综合'}</span>
+            <span>· 查房时间: ${item.inspect_time || '刚刚'}</span>
+          </div>
+          ${snapHtml}
+          ${item.summary ? `
+            <div class="eval-visual-critique" style="margin-top:8px;">
+              <strong>👁️ 现场画面多模态速报:</strong> ${item.summary}
+            </div>
+          ` : ''}
+          ${item.cheer_danmaku ? `
+            <div class="eval-highlight" style="background:#eff6ff; border-left:3px solid #3b82f6; margin-top:8px;">
+              <strong>🐾 发送给直播间的猫娘打气弹幕:</strong> “${item.cheer_danmaku}” ${item.danmaku_sent ? '（已成功发射至现场）' : '（仅预览）'}
+            </div>
+          ` : ''}
+          ${item.cat_report ? `
+            <div class="eval-cat-comment" style="margin-top:8px;">
+              <strong>💌 私信汇报主人:</strong> ${item.cat_report}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function triggerArticleCruiseAction() {
+    const input = document.getElementById('articleKwInput');
+    const kw = input ? input.value.trim() : '大模型原理';
+    try {
+      const res = await fetch('/api/cruise_articles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: kw, count: 2 })
+      });
+      const data = await res.json();
+      alert(data.message || '已启动专栏研读任务！');
+      loadStatus();
+    } catch(e) {
+      alert('启动专栏研读失败: ' + e);
+    }
+  }
+
+  async function triggerLiveInspectAction() {
+    const input = document.getElementById('liveRoomInput');
+    const check = document.getElementById('liveDanmakuCheck');
+    const roomId = input ? parseInt(input.value) : 6;
+    const sendDm = check ? check.checked : true;
+    try {
+      const res = await fetch('/api/inspect_live', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: roomId, send_danmaku: sendDm })
+      });
+      const data = await res.json();
+      alert(data.message || '已派出闪闪突击查房！');
+      loadStatus();
+    } catch(e) {
+      alert('查房请求失败: ' + e);
+    }
+  }
+
   // 初始加载与定时轮询
   loadStatus();
   setInterval(loadStatus, 5000);
@@ -1503,7 +1770,7 @@ def run_server(port=8765):
     print("[WebUI] 🐾 赛博养Gemini · 自动化后台常驻巡航守护线程已伴生启动！", flush=True)
 
     server_address = ("", port)
-    httpd = HTTPServer(server_address, HajimiWebHandler)
+    httpd = ThreadingHTTPServer(server_address, HajimiWebHandler)
     print(f"\n=======================================================")
     print(f"🐾 赛博养Gemini · 全息监控与伴生中枢已启动！")
     print(f"👉 独立浏览器大屏访问: http://localhost:{port}")
@@ -1513,6 +1780,12 @@ def run_server(port=8765):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[WebUI] 控制台服务已安全停止。")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[WebUI] serve_forever 发生异常: {e}", flush=True)
+    finally:
+        print("[WebUI] run_server 结束退出！", flush=True)
 
 
 if __name__ == "__main__":
