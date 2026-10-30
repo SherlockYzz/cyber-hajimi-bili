@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 赛博哈基米 (Cyber-Hajimi) - 毛玻璃跨端控制中心 (Web UI & Sidecar)
 - 零第三方依赖：纯 Python 3 原生 http.server 驱动
@@ -30,6 +30,22 @@ PERSONA_BACKUP_PATH = PROJECT_ROOT / "docs" / "hajimi_persona.md"
 
 JOURNALS_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# pythonw.exe 静默执行兼容防护 (解决 sys.stdout 为 None 导致的崩溃)
+if sys.stdout is None or sys.stderr is None:
+    log_file = PROJECT_ROOT / "cache" / "hajimi_service.log"
+    try:
+        _fp = open(log_file, "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _fp
+        if sys.stderr is None:
+            sys.stderr = _fp
+    except Exception:
+        import io
+        if sys.stdout is None:
+            sys.stdout = io.StringIO()
+        if sys.stderr is None:
+            sys.stderr = io.StringIO()
 
 from bili_hajimi_core import BiliHajimiCore
 from hajimi_brain import HajimiBrain
@@ -95,6 +111,8 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 "at_count_today": daemon_instance.state.get("at_count_today", 0),
                 "watched_count": len(daemon_instance.state.get("watched_today", [])),
                 "treasures_count": len(daemon_instance.state.get("treasures_today", [])),
+                "comment_replied_count_today": daemon_instance.state.get("comment_replied_count_today", 0),
+                "pm_replied_count_today": daemon_instance.state.get("pm_replied_count_today", 0),
                 "morning_done": daemon_instance.state.get("morning_journal_done", False),
                 "evening_done": daemon_instance.state.get("evening_journal_done", False),
                 "recent": daemon_instance.state.get("recent_evaluations", [])[:80],
@@ -251,6 +269,18 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             t.start()
             self._send_json({"success": True, "message": "已成功唤起闪闪！全速巡航中..."})
 
+        elif path == "/api/trigger_reply_check":
+            def _run_reply():
+                try:
+                    c_res = daemon_instance.check_and_reply_comments()
+                    p_res = daemon_instance.check_and_reply_private_messages()
+                    print(f"[WebUI] 立即检查完成: 回复评论 {len(c_res)} 条, 回复私信 {len(p_res)} 条")
+                except Exception as e:
+                    print(f"[WebUI] 立即检查回复/私信异常: {e}")
+            t = threading.Thread(target=_run_reply, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": "已在后台启动评论回复与站内私信轮询任务！"})
+
         elif path == "/api/send_pm":
             target_uid = payload.get("receiver_uid") or daemon_instance.config.get("profile", {}).get("master_uid")
             content = payload.get("content") or "🐾 主人！这是闪闪来自控制中心的站内私信测试喵~ ✨"
@@ -269,6 +299,17 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             t = threading.Thread(target=_boost, daemon=True)
             t.start()
             self._send_json({"success": True, "message": "已成功启动主人视频专属护航队列！全量点赞、多投弹幕与深度长评进行中..."})
+
+        elif path == "/api/interact_peers":
+            def _peers():
+                try:
+                    res = daemon_instance.check_and_interact_ai_peers()
+                    print(f"[WebUI] 同行研学互访完成: {res}")
+                except Exception as e:
+                    print(f"[WebUI] 同行研学互访异常: {e}")
+            t = threading.Thread(target=_peers, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": "已在后台启动向 AI 运营同行（大肥鱼、鲸鱼娘等）交流研学！"})
 
         elif path == "/api/morning_journal":
             path_file = daemon_instance.generate_morning_journal_file()
@@ -536,13 +577,33 @@ def get_dashboard_html() -> str:
     }
 
     .eval-visual-critique {
-      background: #f0fdf4;
-      border-left: 3px solid #10b981;
+      background: #fdf2f8;
+      border-left: 3px solid #ec4899;
       padding: 10px 14px;
       border-radius: 0 6px 6px 0;
       margin-top: 8px;
       font-size: 13px;
-      color: #065f46;
+      color: #9d174d;
+      line-height: 1.5;
+    }
+    .eval-knowledge-critique {
+      background: #eff6ff;
+      border-left: 3px solid #2563eb;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #1e40af;
+      line-height: 1.5;
+    }
+    .eval-knowledge-nugget {
+      background: #f0fdf4;
+      border-left: 3px solid #16a34a;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #15803d;
       line-height: 1.5;
     }
     .eval-highlight {
@@ -778,6 +839,7 @@ def get_dashboard_html() -> str:
         <div class="header-actions">
           <button class="btn-action" onclick="loadStatus()">🔄 刷新列表</button>
           <button class="btn-action" style="background:#ec4899; color:#fff;" onclick="triggerBoostMaster()">⭐ 一键应援主人作品</button>
+          <button class="btn-action" style="background:#8b5cf6; color:#fff;" onclick="triggerInteractPeers()">🤝 AI运营同行研学互动</button>
           <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪出击巡航</button>
         </div>
       </div>
@@ -1088,8 +1150,40 @@ def get_dashboard_html() -> str:
         </div>
       ` : '';
 
+      const category = item.video_category || (item.title && (
+        item.title.includes('教程') || item.title.includes('课') || item.title.includes('大模型') || 
+        item.title.includes('架构') || item.title.includes('算法') || item.title.includes('源码') || 
+        item.title.includes('原理') || item.title.includes('实战') || item.title.includes('入门') || 
+        item.title.includes('从零') || item.title.includes('深度学习') || item.title.includes('机器学习') || 
+        item.title.includes('Python') || item.title.includes('Agent') || item.title.includes('RAG')
+      ) ? 'knowledge_tutorial' : (
+        item.title && (item.title.includes('MAD') || item.title.includes('AMV') || item.title.includes('漫剪') || item.title.includes('作画') || item.title.includes('卡点')) ? 'anime_mad_edit' : 'general'
+      ));
+
+      let critiqueLabel = '🎨 视觉画风与分镜点评';
+      let critiqueClass = 'eval-visual-critique';
+      let categoryBadge = '';
+
+      if (category === 'knowledge_tutorial') {
+        critiqueLabel = '📚 讲义内容深度与知识架构点评';
+        critiqueClass = 'eval-knowledge-critique';
+        categoryBadge = ' · <span style="background:#dbeafe; color:#1e40af; padding:2px 6px; border-radius:4px; font-weight:600; font-size:11.5px;">📚 网课/知识品鉴标准 (字幕文稿深度为主)</span>';
+      } else if (category === 'anime_mad_edit') {
+        critiqueLabel = '🎨 视觉画风与分镜张力点评';
+        critiqueClass = 'eval-visual-critique';
+        categoryBadge = ' · <span style="background:#fce7f3; color:#9d174d; padding:2px 6px; border-radius:4px; font-weight:600; font-size:11.5px;">🎨 二次元/视听剪辑标准 (音画分镜为主)</span>';
+      } else if (category === 'vlog_documentary') {
+        critiqueLabel = '🎬 镜头语言与叙事真实度点评';
+        critiqueClass = 'eval-visual-critique';
+        categoryBadge = ' · <span style="background:#ecfdf5; color:#065f46; padding:2px 6px; border-radius:4px; font-weight:600; font-size:11.5px;">🎬 生活纪实/纪录片标准</span>';
+      }
+
       const visualCritiqueHtml = item.visual_critique ? `
-        <div class="eval-visual-critique"><strong>🎨 视觉画风与分镜点评:</strong> ${item.visual_critique}</div>
+        <div class="${critiqueClass}"><strong>${critiqueLabel}:</strong> ${item.visual_critique}</div>
+      ` : '';
+
+      const knowledgeHtml = item.knowledge_nugget ? `
+        <div class="eval-knowledge-nugget"><strong>💡【知识科普与干货小贴士】:</strong> ${item.knowledge_nugget}</div>
       ` : '';
 
       const highlightHtml = item.highlight ? `
@@ -1120,9 +1214,11 @@ def get_dashboard_html() -> str:
             <span>质检时间: ${item.time || '-'}</span> · 
             <span>BV号: <code>${item.bvid}</code></span>
             ${item.should_at ? ' · <span style="color:#059669; font-weight:700;">★ 已触发 @主人</span>' : ''}
+            ${categoryBadge}
           </div>
           ${stripHtml}
           ${visualCritiqueHtml}
+          ${knowledgeHtml}
           ${highlightHtml}
           ${communityHtml}
           ${catCommentHtml}
@@ -1246,6 +1342,18 @@ def get_dashboard_html() -> str:
     showToast('⭐ 正在唤醒闪闪对主人全部视频执行专属护航...');
     try {
       const res = await fetch('/api/boost_master', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+      setTimeout(loadStatus, 2000);
+    } catch(e) {
+      showToast('调用失败: ' + e);
+    }
+  }
+
+  async function triggerInteractPeers() {
+    showToast('🤝 正在唤醒闪闪向 AI 运营同行（大肥鱼、鲸鱼娘等）交流研学...');
+    try {
+      const res = await fetch('/api/interact_peers', { method: 'POST' });
       const data = await res.json();
       showToast(data.message);
       setTimeout(loadStatus, 2000);

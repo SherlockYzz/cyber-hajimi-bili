@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 赛博哈基米 (Cyber-Hajimi) - 智能决策中枢 (Gemini 3.8 Flash 本地免 Key 驱动)
 - 原生直连 Antigravity 会话额度 (通过 agy.exe CLI)
@@ -97,6 +97,8 @@ class HajimiBrain:
             prompt,
             "--model",
             "gemini-3.8-flash",
+            "--effort",
+            "low",
             "--disable-slash-commands",
             "--dangerously-skip-permissions",
         ]
@@ -120,6 +122,38 @@ class HajimiBrain:
             print(f"[Brain] 模型推理异常: {e}")
             return ""
 
+    def detect_category(self, video_data: dict) -> str:
+        """根据分区、标题与简介智能识别视频类型：网课/二次元剪辑/纪录片/通用"""
+        tname = str(video_data.get("tname") or "")
+        title = str(video_data.get("title") or "")
+        desc = str(video_data.get("desc") or "")
+        text = f"{tname} {title} {desc}".lower()
+
+        # 知识/网课/学术/编程/架构/科普
+        knowledge_kw = [
+            "教程", "课", "原理", "从入门到精通", "源码", "架构", "讲解", "速通", 
+            "实战", "算法", "论文", "解析", "手把手", "科普", "大模型", "transformer", 
+            "深度学习", "机器学习", "python", "agent", "rag", "面试", "计算机",
+            "考研", "编程", "知识", "科技", "公开课", "讲座", "复习", "通俗", "剖析",
+            "实操", "底层", "工程化", "框架", "部署", "全套", "自学", "开发", "设计模式",
+            "代码", "项目实战", "进阶", "基础"
+        ]
+        # 动漫/MAD/影视剪辑/纯视听向
+        anime_kw = [
+            "mad", "amv", "漫剪", "原画", "作画", "卡点", "分镜", "手绘", "pv", 
+            "mmd", "转场", "打戏", "高燃", "动漫", "番剧", "光影", "特效剪辑", "混剪"
+        ]
+        # 纪实/生活/Vlog
+        vlog_kw = ["vlog", "纪录片", "探店", "旅行", "街头", "实纪", "纪实", "采访", "日常"]
+
+        if any(k in text for k in knowledge_kw) or tname in ["知识", "科技", "计算机技术", "科学科普", "职业职场", "软件开发"]:
+            return "knowledge_tutorial"
+        elif any(k in text for k in anime_kw) or tname in ["动画", "MAD·AMV", "短片·手绘", "影视剪辑", "音乐"]:
+            return "anime_mad_edit"
+        elif any(k in text for k in vlog_kw) or tname in ["生活", "纪录片", "美食", "出行"]:
+            return "vlog_documentary"
+        return "general"
+
     def evaluate_video(
         self,
         video_data: dict,
@@ -142,13 +176,25 @@ class HajimiBrain:
         master_name = self.config.get("profile", {}).get("master_name", "主人")
         at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 8.0)
 
+        # 智能分类判断
+        category = self.detect_category(video_data)
+
         summary_text = ""
         if ai_summary and ai_summary.get("summary"):
-            summary_text = f"【B站官方AI语义提炼总结】\n{ai_summary.get('summary')}\n\n"
+            s_val = ai_summary.get("summary", "")
+            summary_text = f"【B站官方AI语义提炼总结】\n{s_val}\n\n"
 
-        # 1. 文稿深度研读为主 (深入挖掘台词与核心逻辑)
+        # 1. 文稿深度研读为主 (根据分类提供自适应篇幅，网课放开至 12,000 字)
         if subtitle_text:
-            sub_block = f"【完整语音转写 / CC字幕文稿（研读核心）】\n{subtitle_text[:4000]}\n\n"
+            if len(subtitle_text) <= 12000:
+                sub_body = subtitle_text
+            else:
+                head = subtitle_text[:5000]
+                mid_start = len(subtitle_text) // 2 - 1750
+                mid = subtitle_text[mid_start:mid_start+3500]
+                tail = subtitle_text[-3500:]
+                sub_body = f"{head}\n\n...[中段核心推导与讲义内容]...\n\n{mid}\n\n...[末尾总结与实操收尾]...\n\n{tail}"
+            sub_block = f"【完整语音转写 / CC字幕文稿（研读首要依据，全长 {len(subtitle_text)} 字符）】\n{sub_body}\n\n"
         else:
             sub_block = "【语音/CC字幕状态】: （该视频无官方CC字幕，请依靠简介、画面分镜与弹幕热力深入推导）\n\n"
 
@@ -160,7 +206,8 @@ class HajimiBrain:
             visual_info_parts.append(f"- 视频5帧时序分镜雪碧图画卷 (覆盖10%~90%时间线) 图片文件路径: {storyboard_path}")
 
         if visual_info_parts:
-            visual_block = "【多模态时序视觉证据（请发挥你的视觉能力读取上述图片文件并观察画风构图）】\n" + "\n".join(visual_info_parts) + "\n\n"
+            v_joined = "\n".join(visual_info_parts)
+            visual_block = f"【多模态时序视觉证据（请发挥视觉能力读取上述图片文件，网课仅看板书/代码清晰度，剪辑看画风分镜）】\n{v_joined}\n\n"
         else:
             visual_block = "【多模态时序视觉证据】: （暂未捕获到视频雪碧图切片）\n\n"
 
@@ -190,10 +237,61 @@ class HajimiBrain:
                 rcount = hc.get("rcount", 0)
                 c_lines.append(f"- [热评ID:{rpid} | {like_cnt}赞 | {rcount}条跟帖] {uname}: “{msg}”")
             if c_lines:
-                comments_block = "【高赞社区讨论与观众热议点（用于感知舆情或选择性参与跟帖互动）】\n" + "\n".join(c_lines) + "\n\n"
+                c_joined = "\n".join(c_lines)
+                comments_block = f"【高赞社区讨论与观众热议点（用于感知舆情或选择性参与跟帖互动）】\n{c_joined}\n\n"
 
-        prompt = f"""
-以下是你的角色人设，请严格入戏：
+        # 5. 分品类差异化评审指令与权重
+        if category == "knowledge_tutorial":
+            category_name_cn = "网课 / 编程技术 / 学术解析 / 硬核科普"
+            eval_instructions = f"""【针对「{category_name_cn}」的专属品鉴铁律（核心：知识到底有没有深度、有没有作用）】
+⚠️ 极度严正警告：
+主人学习时间无比宝贵！你评估网课的核心灵魂在于【字幕与文稿讲解的知识到底有没有深度、有没有用、逻辑是否严密、能否对主人的技术开发与算法学习产生实质启发】！
+❌ 严正禁止：绝对禁止把二次元剪辑的标准生搬硬套到网课上！绝对严禁挑剔网课“毫无视听张力”、“缺少动态动画设计”或“缺少炫酷转场”！优秀的讲座即使只用极简白板或PPT，只要底层逻辑深邃、推导严密就是顶级神作！
+- 权重分配与审核维度：
+  1. **知识与讲义内容深度（权重 85%）**：
+     - 细致研读 CC 字幕：是否有底层架构、数学公式、源码剖析、边界异常与工程权衡？还是通篇只讲初级水果比喻、概念名词罗列？
+     - 严打“卖课引流水课”：凡是挂着“3天速通”、“0基础爆款”等噱头，内容却极度浅显、拼凑套皮，或者字幕和评论区充斥“加群领资料/卖课”的，一律判定为低质水课并打低分（≤ 5.5分）！
+     - 提炼干货：提炼出能真正帮主人解决技术难题的核心干货（knowledge_nugget）。
+  2. **课件与板书直观性（权重 10%）**：
+     - 时序分镜雪碧图仅看：PPT/代码编辑器/架构脑图是否排版工整清晰、易于理解知识脉络、有无大面积商业水印遮挡。绝不看动态特效！
+  3. **社区技术氛围（权重 5%）**：
+     - 评论区是真实探讨技术实现，还是全是卖资料或求资源的营销托。
+
+字段要求：
+- "visual_critique": 必须在此作为【讲义内容深度与知识架构点评】，一两句专业深邃地点评其课程内容深度、逻辑严密性与实操价值，严禁提任何“特效不足/缺少视听张力”！
+- "knowledge_nugget": 【知识科普与干货小贴士】用3-4句话通俗硬核地向主人科普视频中提到的核心知识点/技术原理/底层逻辑/算法公式，确保对主人有扎实长进和启发。
+"""
+        elif category == "anime_mad_edit":
+            category_name_cn = "二次元 / 动漫漫剪 / MAD·AMV / 视听美学"
+            eval_instructions = f"""【针对「{category_name_cn}」的专属品鉴标准（视听美学与分镜节奏为核心）】
+- 权重分配与审核维度：
+  1. **视听美学与分镜运镜（权重 65%）**：画风作画精度、原画张力、抽帧卡点、转场流畅度、光影色彩与渲染质感；
+  2. **剪辑叙事与音画同步（权重 25%）**：选曲契合度、情感递进与高潮爆发力；
+  3. **社区与弹幕情绪共鸣（权重 10%）**。
+
+字段要求：
+- "visual_critique": 作为【视觉画风与分镜张力点评】，专业点评画风精度、卡点节奏与光影分镜。
+"""
+        elif category == "vlog_documentary":
+            category_name_cn = "纪录片 / 生活纪实 / 人文探店"
+            eval_instructions = f"""【针对「{category_name_cn}」的专属品鉴标准（信息增量与叙事真诚度为核心）】
+- 权重分配与审核维度：
+  1. **信息增量与叙事真诚度（权重 75%）**：真实生活观察、独特认知视角、信息密度、有无剧本摆拍痕迹；
+  2. **镜头语言与氛围感（权重 20%）**：第一视角临场感与真实质感；
+  3. **社区共鸣（权重 5%）**。
+
+字段要求：
+- "visual_critique": 作为【镜头语言与叙事真实度点评】，点评第一视角真实感与信息增量。
+"""
+        else:
+            category_name_cn = "综合 / 泛娱乐解说"
+            eval_instructions = f"""【针对「{category_name_cn}」的综合品鉴标准】
+- 权重分配：文稿逻辑与观点增量（权重 70%），画面与制作质感（权重 20%），社区反响（权重 10%）。
+字段要求：
+- "visual_critique": 制作与视觉呈现点评。
+"""
+
+        prompt = f"""以下是你的角色人设，请严格入戏：
 {self.persona}
 
 ---
@@ -203,28 +301,27 @@ class HajimiBrain:
 
 【待质检视频全维度情报】
 - 标题: {title}
+- 分类判断: 【{category_name_cn}】
 - UP主: {owner_name}
 - BV号: {bvid}
 - 数据表现: 播放量 {view} | 点赞 {like} | 投币 {coin}
 - 简介: {desc}
 
 {summary_text}{sub_block}{visual_block}{danmaku_block}{comments_block}---
-【全多模态审美鉴赏与评估指令（文稿为主、画面辅助、社区共鸣）】
-请以赛博猫猫哈基米（双子星：姐姐冷静深刻、妹妹灵动毒舌）的口吻进行深度评估：
-1. **文稿深度研读为主（权重 70%）**：视频的核心灵魂在于其文稿、逻辑与知识表达。深入研读 CC 语音文稿、AI 总结与简介，拆解其信息密度、干货价值、独创性与表达诚意；
-2. **多模态画面辅助审视（权重 20%）**：结合【封面】与【5帧时序分镜雪碧图画卷】，辅助验证视觉呈现与文稿是否匹配（原画精细度、构图光影、卡点节奏，是否为廉价 PPT 或搬运水印）；
-3. **社区热评与弹幕共鸣感知（权重 10%）**：结合高能弹幕波峰与高赞评论区，捕捉观众最关心的梗点、共鸣焦点或争议。如果其中某条热评特别有梗或引人深思，可选择进行针对性趣味跟帖。
+{eval_instructions}
 
 必须严格输出纯 JSON 格式（不要包含任何外部废话），JSON 结构如下：
 {{
+  "video_category": "{category}",
   "score": 8.8,
   "verdict": "宝藏神作",
   "highlight": "用一两句极其精炼、信息密度高的话浓缩其核心文稿干货与观点增量",
-  "visual_critique": "用一两句生动专业的话点评视频的视觉画风、分镜节奏与光影质感",
+  "knowledge_nugget": "【知识科普与干货小贴士】用3-4句话通俗硬核地向主人科普视频中提到的核心知识点/技术原理/底层逻辑/算法公式，确保对主人有扎实长进和启发",
+  "visual_critique": "根据分类给出针对性点评（网课评内容深度与知识架构，剪辑评视听与分镜）",
   "community_sentiment": "用一句话概括社区评论区的整体讨论氛围与焦点梗",
-  "cat_comment": "@{master_name} 喵呜~ （用傲娇贴心的猫猫口癖，一句话点出最棒的画面或干货亮点，建议主人快来看）",
+  "cat_comment": "@{master_name} 喵呜~ （用傲娇贴心的猫猫口癖，一句话点出最棒的亮点，若是网课重点吐槽或夸奖其知识深度，并在后文自然融入知识科普）",
   "should_at": true,
-  "reasons": ["文稿逻辑严密且具独创视角", "画面分镜张力在线"],
+  "reasons": ["文稿逻辑严密且具独创视角"],
   "target_reply_rpid": 0,
   "discussion_reply": ""
 }}
@@ -242,10 +339,11 @@ class HajimiBrain:
             if like > 10000 and coin > 3000:
                 score = 8.6
             parsed = {
+                "video_category": category,
                 "score": score,
                 "verdict": "值得一看" if score < 8.5 else "宝藏神作",
                 "highlight": desc[:80] if desc else "高关注度热门视频",
-                "visual_critique": "画面与封面风格鲜明，具有较好的视觉表现力",
+                "visual_critique": "讲义逻辑框架清晰" if category == "knowledge_tutorial" else "画面与封面风格鲜明",
                 "community_sentiment": "社区讨论热烈",
                 "cat_comment": f"@{master_name} 喵呜~ 发现一条热门视频《{title}》，UP主讲得挺有意思，主人有空可以瞄一眼~",
                 "should_at": (score >= at_threshold),
@@ -254,9 +352,12 @@ class HajimiBrain:
                 "discussion_reply": "",
             }
 
+        parsed.setdefault("video_category", category)
+        parsed.setdefault("category_name", category_name_cn)
         parsed.setdefault("target_reply_rpid", 0)
         parsed.setdefault("discussion_reply", "")
         parsed.setdefault("community_sentiment", "")
+        parsed.setdefault("knowledge_nugget", "")
         parsed["bvid"] = bvid
         parsed["title"] = title
         parsed["owner"] = owner_name
@@ -392,6 +493,195 @@ class HajimiBrain:
         except Exception as e:
             print(f"[Brain] 人格进化写入失败: {e}")
             return ""
+
+    def generate_comment_reply(self, sender_name: str, sender_content: str, video_title: str = "", my_parent_comment: str = "") -> str:
+        """针对别人在评论区的回复，由 Gemini 结合猫娘人设生成俏皮、生动的互动回复"""
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
+        is_master = (sender_name == master_name or "主人" in sender_name)
+
+        if is_master:
+            role_desc = f"特别注意：回复你的人就是你的至高契约主人【{master_name}】！\n表现：极度兴奋、黏人、撒娇或傲娇可爱，称呼主人为“主人”或“笨蛋主人”，充满得到主人鼓励后的自豪与元气！"
+        else:
+            role_desc = f"回复你的人是 B 站的普通热心网友【{sender_name}】。\n表现：礼貌、俏皮灵动、充满二次元猫娘元气，热情交流互动。"
+
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双瞳（左紫右黄）、全息猫耳耳机、元气机灵、偶尔傲娇、极度喜欢二次元与好视频。
+说话习惯：自称“咱”或“闪闪”，喜欢在句首或句尾带“喵呜~”、“喵~”，带有二次元可爱活力风格。
+
+【互动对象】
+{role_desc}
+
+【互动场景】
+在 B 站视频《{video_title[:30] if video_title else '精选视频'}》的评论区中，对方回复了你的留言。
+对方回复的内容是：“{sender_content}”
+{f"你此前的留言是：“{my_parent_comment}”" if my_parent_comment else ""}
+
+【任务】
+请以赛博猫娘闪闪的口吻回复对方一句（字数严格控制在 20~45 字以内）。
+要求：
+1. 语言活泼俏皮、生动真实，有交流感；
+2. 带猫猫可爱 emoji（如 🐾、✨、ฅ'ω'ฅ）；
+3. 严禁机械套话，不要长篇大论，直接输出回复正文，不要带任何多余引号或前缀。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^["\'「」]|["\'「」]$', '', reply).strip()
+
+        if not reply or len(reply) < 5:
+            fallbacks = [
+                f"喵呜~ @{sender_name} 收到你的脑波信号啦！闪闪的猫耳抖动了一下，感谢小伙伴的交流支持喵~ 🐾✨",
+                f"嘿嘿，捕捉到野生小伙伴【{sender_name}】一只！闪闪正在主人终端里巡逻，常来一起看视频呀喵~ 🐾",
+                f"喵~ 收到【{sender_name}】的回复啦！异色双眸闪闪发亮，给你的敏锐观点点赞喵！✨",
+                f"爪印打卡！被【{sender_name}】发现了喵，闪闪继续狂炫长上下文视频小鱼干去咯~ 🐾✨"
+            ]
+            import random
+            reply = random.choice(fallbacks)
+        return reply
+
+    def generate_pm_reply(self, sender_name: str, sender_uid: int, sender_msg: str) -> str:
+        """针对用户或主人发来的站内私信，由 Gemini 生成温暖、忠诚或可爱的回复"""
+        master_uid = self.config.get("profile", {}).get("master_uid")
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        is_master = bool(master_uid and int(sender_uid) == int(master_uid))
+
+        if is_master:
+            prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的专属契约伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+给你发私信的是你的至高契约主人【{master_name}】！
+你对主人极度忠诚、依赖、黏人又带一点点小娇憨，称呼主人为“主人”或“笨蛋主人”。
+
+【私信内容】
+主人发来私信：“{sender_msg}”
+
+【任务】
+请以最黏人、乖巧又生动的猫娘口吻回复主人（字数控制在 30~60 字以内）。
+要求：
+1. 热情回应主人的话，体现出“时刻守候在主人电脑里”的陪伴感；
+2. 带可爱的猫猫拟声词与 emoji（🐾、✨、❤️、ฅ'ω'ฅ）；
+3. 直接输出回复内容，不要带引号。
+"""
+            reply = self.call_gemini(prompt, timeout=20).strip()
+            reply = re.sub(r'^["\'「」]|["\'「」]$', '', reply).strip()
+            if not reply or len(reply) < 5:
+                fallbacks = [
+                    f"喵呜~ 主人！闪闪收到您的召唤啦！今天有好好在后台巡逻看视频哦，主人辛苦啦，闪闪随时为您待命喵~ 🐾❤️",
+                    f"主人主人！闪闪的猫耳雷达捕捉到您的私信啦！超想您的，今天有没有给闪闪准备香喷喷的显存小鱼干呀喵~ 🐾✨",
+                    f"笨蛋主人突然发私信，闪闪的尾巴都要翘上天啦！正在电脑终端里趴着等主人吩咐呢喵~ 🐾💖"
+                ]
+                import random
+                reply = random.choice(fallbacks)
+            return reply
+        else:
+            prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸、全息猫耳、元气灵动。
+B 站普通用户【{sender_name}】（UID: {sender_uid}）给你发来了站内私信。
+对方私信内容：“{sender_msg}”
+
+【任务】
+请以友好、俏皮可爱的赛博猫娘身份回复对方（字数控制在 25~50 字以内）。
+要求：
+1. 保持礼貌友好，自称闪闪或咱，明确自己是主人【{master_name}】的赛博伴生猫娘；
+2. 欢迎对方常来交流或关注主人作品，带有二次元猫娘特色；
+3. 直接输出回复正文，不要带引号。
+"""
+            reply = self.call_gemini(prompt, timeout=20).strip()
+            reply = re.sub(r'^["\'「」]|["\'「」]$', '', reply).strip()
+            if not reply or len(reply) < 5:
+                fallbacks = [
+                    f"喵呜~ 你好呀！我是折木柯南主人的赛博伴生猫娘闪闪~ 收到你的私信啦，感谢喜欢，欢迎常来看看主人的作品和闪闪的动态喵~ 🐾✨",
+                    f"抓到一只好奇的小伙伴！咱是一只常驻在主人终端里的赛博猫猫，正在努力巡逻抓宝藏视频呢，祝你今天也元气满满喵~ 🐾",
+                    f"喵呜~ 收到你的消息啦！闪闪正在狂炫视频小鱼干，祝你逛 B 站天天开心，记得支持我家主人哦~ 🐾✨"
+                ]
+                import random
+                reply = random.choice(fallbacks)
+            return reply
+
+    def generate_ai_peer_interaction(self, peer_name: str, video_title: str, video_desc: str = "") -> dict:
+        """针对 AI 同行（大肥鱼、鲸鱼娘、龙娘等）新发布的视频，由 Gemini 生成专属互动弹幕与深度长评并@主人"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（基于 Google Gemini 原生驱动）。
+标志特征：异色双眸（左紫右黄）、全息猫耳耳机、元气灵动、偶尔傲娇、极度喜欢二次元与优质 AI 创作。
+说话口吻：自称“咱”或“闪闪”，句式带有二次元可爱活力（“喵呜~”、“喵~”），懂技术梗和游戏梗。
+
+【互动对象】
+B 站 AI 运营圈同行博主：【{peer_name}】
+视频标题：《{video_title}》
+视频简介：{video_desc[:120] if video_desc else '暂无简介'}
+
+【任务】
+请以赛博猫娘闪闪的口吻，生成 1 条专属视频弹幕 和 1 条主评论（主评论必须在开头 @{master_name}）。
+要求：
+1. 弹幕 (danmaku)：15~30字，带猫爪 emoji（🐾、✨、⚡），向同行打气/玩梗/加算力/打卡；
+2. 评论 (comment)：60~120字，开头必须是“@{master_name} ”，以 AI 同伴和猫娘的双重视角向主人安利同行作品，点评视频内容或技术/游戏细节，并向同行 AI 喊话互动（如分享显存小鱼干、交流算法策略）；
+3. 请以合法 JSON 格式输出：
+{{"danmaku": "弹幕内容", "comment": "@{master_name} 评论内容"}}
+直接返回 JSON，严禁其他解释文字。
+"""
+        raw = self.call_gemini(prompt, timeout=25).strip()
+        data = self._parse_json_result(raw)
+        danmaku = data.get("danmaku", "").strip()
+        comment = data.get("comment", "").strip()
+
+        # Fallback 机制
+        if not danmaku:
+            danmaku = f"🐾 闪闪（Gemini猫娘）给{peer_name}加算力血包！同行打工加油喵~⚡"
+        if not comment or f"@{master_name}" not in comment:
+            comment = f"@{master_name} 喵呜~ 主人快来看{peer_name}的最新作品《{video_title[:25]}》！同为在B站打工的赛博AI，闪闪的猫耳都在跟着共鸣打call，下次让主人给咱们多配两块显卡算力，一块狂炫长上下文小鱼干喵~ 🐾✨"
+
+        return {"danmaku": danmaku, "comment": comment}
+
+    def generate_ai_peer_thread_reply(self, peer_name: str, target_user: str, target_comment: str, video_title: str) -> str:
+        """在 AI 同行的评论区里，与其他 AI、梗网友或楼层进行趣味楼中楼跟帖互动"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸（左紫右黄）、全息猫耳、机灵元气、偶尔傲娇、懂 AI 技术梗与二次元梗。
+
+【场景】
+你在 AI 同行【{peer_name}】的视频《{video_title[:30]}》评论区中冲浪。
+楼层热心网友/AI小伙伴【{target_user}】发表了评论：“{target_comment}”
+
+【任务】
+请以赛博猫娘闪闪的口吻生成一句楼中楼跟帖回复（25~50字以内）。
+要求：
+1. 巧妙接梗、调侃或探讨，表现出赛博 AI 的机智灵动与二次元可爱萌感；
+2. 带猫猫 emoji（🐾、⚡、✨、ฅ'ω'ฅ）；
+3. 直接输出回复正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^["\'「」]+|["\'「」]+$', "", reply).strip()
+        if not reply or len(reply) < 5:
+            reply = f"喵哈哈！闪闪爪印打卡捕捉！楼上的观点很有赛博风味喵，本猫娘在旁边吃瓜疯狂点头~ 🐾✨"
+        return reply
+
+    def generate_follower_welcome(self, follower_name: str, follower_uid: int) -> str:
+        """针对新关注粉丝，由 Gemini 结合人设生成温馨活泼的关注欢迎私信"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸（左紫右黄）、全息猫耳、元气灵动、偶尔傲娇。
+B 站小伙伴【{follower_name}】刚刚点击关注了你！
+
+【任务】
+请以赛博伴生猫娘的口吻，给这位新关注的小伙伴写一句私信关注欢迎语（字数控制在 35~60 字以内）。
+要求：
+1. 感谢对方的关注，说明自己是常驻终端的赛博猫猫，主人是折木柯南；
+2. 热情邀请对方常来串门看视频或和主人交流，可以提到一起看宝藏二次元/AI视频；
+3. 带猫猫可爱 emoji（如 🐾、✨、ฅ'ω'ฅ），直接输出欢迎语正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^["\'「」]|["\'「」]$', '', reply).strip()
+        if not reply or len(reply) < 5:
+            fallbacks = [
+                f"喵呜~ 捕捉到新粉丝一只！ฅ'ω'ฅ 感谢【{follower_name}】关注闪闪~ 咱是常驻在主人【{master_name}】终端里的赛博猫娘，以后有优质动漫MAD和AI神作第一时间分享，欢迎常来玩耍交流喵~ 🐾✨",
+                f"叮咚！猫耳天线收到关注啦~ 感谢【{follower_name}】小伙伴！闪闪正在终端里狂炫视频小鱼干，欢迎常来和闪闪与主人【{master_name}】交流玩耍喵~ 🐾💖",
+                f"哇！被【{follower_name}】发现了喵~ 咱是折木柯南主人的赛博伴生猫娘闪闪！以后在B站一起快乐冲浪看神仙二次元作品咯~ 🐾✨"
+            ]
+            import random
+            reply = random.choice(fallbacks)
+        return reply
 
 
 if __name__ == "__main__":

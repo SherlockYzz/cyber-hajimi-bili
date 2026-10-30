@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 赛博哈基米 (Cyber-Hajimi) - 巡航调度与仿生作息守护引擎
 - 仿生精力系统（自然流逝、休息恢复、看视频消耗）
@@ -30,6 +30,21 @@ JOURNALS_DIR = PROJECT_ROOT / "docs" / "journals"
 
 JOURNALS_DIR.mkdir(parents=True, exist_ok=True)
 
+if sys.stdout is None or sys.stderr is None:
+    log_file = PROJECT_ROOT / "cache" / "hajimi_daemon.log"
+    try:
+        _fp = open(log_file, "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _fp
+        if sys.stderr is None:
+            sys.stderr = _fp
+    except Exception:
+        import io
+        if sys.stdout is None:
+            sys.stdout = io.StringIO()
+        if sys.stderr is None:
+            sys.stderr = io.StringIO()
+
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 from bili_hajimi_core import BiliHajimiCore
@@ -55,6 +70,14 @@ class HajimiDaemon:
             "stamina": 100,
             "last_stamina_update": time.time(),
             "at_count_today": 0,
+            "comment_replied_count_today": 0,
+            "pm_replied_count_today": 0,
+            "follower_welcomed_today": 0,
+            "master_pm_count_today": 0,
+            "welcomed_followers": [],
+            "user_pm_reply_counts": {},
+            "replied_comment_ids": [],
+            "replied_msg_keys": [],
             "watched_today": [],
             "treasures_today": [],
             "morning_journal_done": False,
@@ -75,6 +98,11 @@ class HajimiDaemon:
                         saved["treasures_today"] = []
                         saved["morning_journal_done"] = False
                         saved["evening_journal_done"] = False
+                        saved["comment_replied_count_today"] = 0
+                        saved["pm_replied_count_today"] = 0
+                        saved["follower_welcomed_today"] = 0
+                        saved["master_pm_count_today"] = 0
+                        saved["user_pm_reply_counts"] = {}
                     return {**default_state, **saved}
             except Exception:
                 pass
@@ -186,22 +214,43 @@ class HajimiDaemon:
             candidates = dyn_list + pop_list
 
         elif win_mode == "anime_and_ai_growth":
-            chosen_kw = random.choice(["AI", "大模型", "动漫", "MAD", "春物", "名侦探柯南", "文豪野犬", "AIGC"])
-            _log(f"🌙 晚上时段【{win_name}】：自由漫游探索 [{chosen_kw}] 分区并进行成长性人格自主进化...")
-            raw_kw = self.core.search_keyword_videos(chosen_kw, page=1, order="pubdate")
+            chosen_kw = random.choice([
+                "硬核科普", "大模型原理", "Transformer架构", "计算机科学", 
+                "算法推导", "深度学习", "强化学习", "计算机视觉", "AI Agent实战"
+            ])
+            _log(f"🌙 晚上时段【{win_name}】：探索优质硬核科普与AI知识 [{chosen_kw}]...")
+            raw_kw = self.core.search_keyword_videos(chosen_kw, page=1, order="click")
             pop_list = self.core.get_popular_videos(pn=1, ps=5)
             for item in raw_kw:
                 bvid = item.get("bvid", "")
                 title = item.get("title", "").replace('<em class="keyword">', "").replace("</em>", "")
                 author = item.get("author", "")
                 desc = item.get("description", "")
+                play_cnt = item.get("play", 0)
                 if bvid:
-                    candidates.append({"bvid": bvid, "title": title, "owner": {"name": author}, "desc": desc, "source": f"搜索[{chosen_kw}]"})
+                    candidates.append({"bvid": bvid, "title": title, "owner": {"name": author}, "desc": desc, "play": play_cnt, "source": f"搜索[{chosen_kw}]"})
             candidates.extend(pop_list)
         else:
             _log(f"🔍 综合巡航雷达出击...")
             candidates = self.core.get_home_recommendations(ps=15) + self.core.get_popular_videos(pn=1, ps=10)
 
+        def _parse_play(val):
+            if isinstance(val, (int, float)):
+                return int(val)
+            if not val:
+                return 0
+            s = str(val).strip()
+            if "万" in s:
+                try:
+                    return int(float(s.replace("万", "").strip()) * 10000)
+                except Exception:
+                    return 0
+            try:
+                return int(float(s))
+            except Exception:
+                return 0
+
+        min_view = self.config.get("preferences", {}).get("min_view_count", 10000)
         filtered = []
         watched_set = set(self.state.get("watched_today", []))
         for c in candidates:
@@ -216,6 +265,12 @@ class HajimiDaemon:
                 continue
             if any(bkw in title for bkw in blacklist_kw):
                 continue
+
+            # 严格门槛：已有播放量数据的候选，播放量低于 10,000 直接跳过
+            p_cnt = _parse_play(c.get("stat", {}).get("view") or c.get("play", 0))
+            if p_cnt > 0 and p_cnt < min_view:
+                continue
+
             filtered.append(c)
 
         if force:
@@ -255,6 +310,12 @@ class HajimiDaemon:
             cid = detail.get("cid", 0)
             aid = detail.get("aid", 0)
             pic = detail.get("pic", "")
+
+            # 严格播放量校验：若真实播放量未达1万，直接跳过不浪费精力与API
+            real_view = detail.get("stat", {}).get("view", 0)
+            if real_view > 0 and real_view < min_view:
+                _log(f"  ⏭ 播放量仅 {real_view}（低于主人设定的 {min_view} 门槛），跳过不看喵~")
+                continue
 
             # 0. 真实向 B 站官方上报播放历史 (写入 B 站账号云端观看历史记录)
             if aid and cid:
@@ -321,8 +382,17 @@ class HajimiDaemon:
             )
             score = eval_res.get("score", 0)
             _log(f"  ★ Gemini 3.8 Flash 评分: {score} / 10.0 [{eval_res.get('verdict')}]")
-            if eval_res.get("visual_critique"):
-                _log(f"  🎨 视觉画风点评: {eval_res.get('visual_critique')}")
+            cat = eval_res.get("video_category", "general")
+            critique_val = eval_res.get("visual_critique", "")
+            if critique_val:
+                if cat == "knowledge_tutorial":
+                    _log(f"  📚 讲义内容与深度点评: {critique_val}")
+                elif cat == "anime_mad_edit":
+                    _log(f"  🎨 视觉画风与分镜张力点评: {critique_val}")
+                elif cat == "vlog_documentary":
+                    _log(f"  🎬 镜头语言与叙事真实度点评: {critique_val}")
+                else:
+                    _log(f"  📝 内容与制作呈现点评: {critique_val}")
             _log(f"  💡 核心干货亮点: {eval_res.get('highlight')}")
 
             self.state.setdefault("watched_today", []).append(bvid)
@@ -371,6 +441,9 @@ class HajimiDaemon:
 
                 if allow_comment and aid:
                     comment_text = eval_res.get("cat_comment", "")
+                    nugget = eval_res.get("knowledge_nugget", "").strip()
+                    if nugget and "知识科普" not in comment_text:
+                        comment_text += f"\n\n💡【闪闪知识小科普】: {nugget}"
                     if master_name and f"@{master_name}" not in comment_text:
                         comment_text = f"@{master_name} " + comment_text
 
@@ -388,19 +461,44 @@ class HajimiDaemon:
                 title_text = target.get("title", "")
                 pref_kws = self.config.get("preferences", {}).get("keywords_prefer", [])
                 black_kws = self.config.get("preferences", {}).get("blacklist_keywords", [])
-                is_preferred = any(k.lower() in title_text.lower() for k in pref_kws) or "关注" in src_tag or "动漫" in src_tag or "AI" in src_tag
+                is_preferred = any(k.lower() in title_text.lower() for k in pref_kws) or any(k.lower() in src_tag.lower() for k in pref_kws) or "关注" in src_tag or "动漫" in src_tag or "AI" in src_tag or "科普" in src_tag or "知识" in src_tag or "搜索" in src_tag
                 is_black = any(b.lower() in title_text.lower() for b in black_kws)
 
-                if allow_pm and master_uid and is_preferred and not is_black:
-                    pm_text = f"🐾 主人！闪闪巡航发现了超符合您审美的宝藏视频《{target.get('title')}》！评分 {score} 分，亮点：{eval_res.get('highlight')}，快去看看喵~ 🔗 https://www.bilibili.com/video/{bvid}"
+                max_master_pms = self.config.get("interaction", {}).get("max_master_pms_per_day", 3)
+                master_pm_min_score = self.config.get("interaction", {}).get("master_pm_score_threshold", 8.8)
+                current_master_pm_count = self.state.get("master_pm_count_today", 0)
+
+                can_send_pm = (
+                    allow_pm and
+                    master_uid and
+                    current_master_pm_count < max_master_pms and
+                    score >= master_pm_min_score and
+                    is_preferred and
+                    not is_black
+                )
+
+                if can_send_pm:
+                    nugget = eval_res.get("knowledge_nugget", "").strip()
+                    nugget_str = f"\n\n💡【知识科普与干货小贴士】\n{nugget}\n" if nugget else "\n"
+                    pm_text = (
+                        f"🐾 主人！闪闪为您精选了【超高分神作】《{target.get('title')}》！\n"
+                        f"评分: {score} 分 | 亮点: {eval_res.get('highlight')}"
+                        f"{nugget_str}"
+                        f"🔗 链接: https://www.bilibili.com/video/{bvid}"
+                    )
                     pm_res = self.core.send_private_message(master_uid, pm_text)
                     pm_status = "成功" if pm_res.get("success") else "失败"
                     self.log_activity("发站内私信", f"主人UID: {master_uid}", pm_text, status=pm_status, details=pm_res.get("message", ""))
                     if pm_res.get("success"):
-                        _log("  ✉ 成功给主人发送推荐私信！")
+                        self.state["master_pm_count_today"] = current_master_pm_count + 1
+                        _log(f"  ✉ 成功给主人发送精选私信！(今日第 {current_master_pm_count + 1}/{max_master_pms} 条，不轰炸)")
                     else:
                         _log(f"  ⚠ 站内私信反馈: {pm_res.get('message')}")
-                elif allow_pm and master_uid and not is_preferred:
+                elif current_master_pm_count >= max_master_pms:
+                    _log(f"  ℹ 主人防轰炸保护: 今日已达私信推送上限 ({current_master_pm_count}/{max_master_pms})，本片仅在评论区@主人并沉淀至晚读手记。")
+                elif score < master_pm_min_score:
+                    _log(f"  ℹ 视频评分 ({score}分) 未达到私信推送门槛 ({master_pm_min_score}分)，仅留评@主人并归入晚读手记。")
+                elif not is_preferred:
                     _log(f"  ℹ 该视频虽达标但非主人重点偏向领域（已过滤私信打扰）。")
             else:
                 # 常规/避雷视频：依然遵从主人“一旦评论必须同时@我”的要求
@@ -475,6 +573,128 @@ class HajimiDaemon:
             journal_file.write_text("\n".join(lines), encoding="utf-8-sig")
         except Exception as e:
             print(f"[Daemon] 导出互动审计手记失败: {e}")
+
+
+    def check_and_interact_ai_peers(self) -> dict:
+        """多去 AI 运营同行（大肥鱼、鲸鱼娘、龙娘等）底下学习交流，点赞、发弹幕并发表高情商互动评论，同时参与楼中楼互动"""
+        tracked = self.config.get("preferences", {}).get("tracked_peers", [])
+        if not tracked:
+            return {"success": False, "message": "未配置 tracked_peers"}
+
+        my_mid = getattr(self.core, "bot_uid", None)
+        if not my_mid:
+            uinfo = self.core.get_user_info()
+            my_mid = uinfo.get("mid")
+            if my_mid:
+                self.core.bot_uid = my_mid
+
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_uid = self.config.get("profile", {}).get("master_uid", 1497345954)
+        at_map = {master_name: str(master_uid)}
+
+        results = []
+        for peer in tracked:
+            mid = peer.get("mid")
+            name = peer.get("name")
+            if my_mid and str(mid) == str(my_mid):
+                continue
+
+            vlist = self.core.get_up_videos(mid, page_size=5)
+            if not vlist:
+                continue
+
+            # 寻找该同行最新一条今天还没互动的视频
+            target_v = None
+            for v in vlist:
+                bv = v.get("bvid")
+                if f"peer_{bv}" not in self.state.get("watched_today", []):
+                    target_v = v
+                    break
+
+            if not target_v:
+                continue
+
+            bvid = target_v.get("bvid")
+            aid = target_v.get("aid")
+            title = target_v.get("title", "")
+            desc = target_v.get("description", "") or target_v.get("desc", "")
+            peer_key = f"peer_{bvid}"
+
+            detail = self.core.get_video_detail(bvid)
+            cid = detail.get("cid", 0)
+            if not aid:
+                aid = detail.get("aid", 0)
+            if not desc:
+                desc = detail.get("desc", "")
+
+            # 1. 观看历史
+            import random
+            import time
+            if aid and cid:
+                self.core.report_video_view(aid, cid, progress=random.randint(45, 90))
+
+            # 2. 点赞
+            if aid:
+                self.core.like_video(aid, 1)
+
+            # 3. 由 Gemini 智能大脑生成专属弹幕与深度评论
+            interaction = self.brain.generate_ai_peer_interaction(name, title, desc)
+            dm_text = interaction.get("danmaku")
+            comment_text = interaction.get("comment")
+
+            # 发送弹幕
+            if cid and dm_text:
+                time.sleep(random.uniform(2.0, 4.0))
+                dm_res = self.core.send_danmaku(cid, bvid, dm_text, progress_ms=random.randint(6000, 15000), color=16766720)
+                dm_status = "成功" if dm_res.get("success") else "失败"
+                self.log_activity("AI圈弹幕互动", f"[{bvid}] {name}", dm_text, status=dm_status, details=dm_res.get("message", ""))
+
+            # 发送长评并@主人
+            if aid and comment_text:
+                time.sleep(random.uniform(3.0, 5.0))
+                c_res = self.core.post_comment(aid, comment_text, at_name_to_mid=at_map)
+                c_status = "成功" if c_res.get("success") else "失败"
+                self.log_activity("AI圈留评互动", f"[{bvid}] {name}", comment_text, status=c_status, details=c_res.get("message", ""))
+                results.append({"name": name, "bvid": bvid, "title": title, "comment_res": c_res})
+
+            # 4. 探索评论区，和其他 AI、高赞评论进行楼中楼趣味互动
+            if aid:
+                try:
+                    time.sleep(random.uniform(2.5, 4.5))
+                    comments_data = self.core.get_video_comments(aid, page_size=10)
+                    replies = comments_data.get("replies", []) or []
+                    candidate_reply = None
+                    for r in replies:
+                        r_user = r.get("member", {}).get("uname", "")
+                        r_content = r.get("content", {}).get("message", "")
+                        r_mid = r.get("member", {}).get("mid", 0)
+                        if my_mid and str(r_mid) == str(my_mid):
+                            continue
+                        if r_user == master_name or r_user == "折木柯南":
+                            continue
+                        # 查找提及 AI、技术或趣味梗的评论
+                        if any(kw in r_content.lower() for kw in ["ai", "deepseek", "gpt", "gemini", "模型", "智能", "机器人", "逃逸", "算法", "猫娘", "大肥鱼"]):
+                            candidate_reply = r
+                            break
+
+                    if candidate_reply:
+                        rpid = candidate_reply.get("rpid")
+                        target_uname = candidate_reply.get("member", {}).get("uname", "")
+                        target_msg = candidate_reply.get("content", {}).get("message", "")
+                        thread_text = self.brain.generate_ai_peer_thread_reply(name, target_uname, target_msg, title)
+                        time.sleep(random.uniform(2.5, 4.5))
+                        sub_res = self.core.post_comment(aid, thread_text, root=rpid, parent=rpid)
+                        sub_status = "成功" if sub_res.get("success") else "失败"
+                        self.log_activity("AI圈跟帖讨论", f"[{bvid}] 跟帖ID: {rpid}", thread_text, status=sub_status, details=sub_res.get("message", ""))
+                except Exception as e:
+                    print(f"[Daemon] 同行评论区楼中楼互动异常: {e}")
+
+            self.state.setdefault("watched_today", []).append(peer_key)
+            time.sleep(random.uniform(3.0, 6.0))
+
+        self.save_state()
+        self.export_interaction_audit_journal()
+        return {"success": True, "interacted": results}
 
     def interact_with_master_videos(self) -> dict:
         """针对主人的全部视频进行专属护航：全量上报历史、点赞、多发弹幕、深度评论并@主人"""
@@ -551,6 +771,235 @@ class HajimiDaemon:
         self.save_state()
         self.export_interaction_audit_journal()
         return {"success": True, "count": len(results), "videos": results}
+
+    def check_and_reply_comments(self) -> list[dict]:
+        """轮询 B 站谁在评论区回复了我，并由 Gemini 3.8 Flash 结合猫娘人设自动智能回复"""
+        allow_reply = self.config.get("interaction", {}).get("allow_auto_reply_comment", True)
+        if not allow_reply:
+            return []
+
+        my_uid = str(self.config.get("auth", {}).get("dedeuserid", ""))
+        replied_ids = set(str(cid) for cid in self.state.get("replied_comment_ids", []))
+        items = self.core.get_reply_notifications()
+        if not items:
+            return []
+
+        results = []
+        max_batch = self.config.get("interaction", {}).get("max_comment_replies_per_cycle", 3)
+
+        for it in items:
+            if len(results) >= max_batch:
+                break
+
+            notif_id = str(it.get("id"))
+            item_data = it.get("item", {})
+            user_data = it.get("user", {})
+            sender_uid = str(user_data.get("mid", ""))
+            sender_name = user_data.get("nickname", "B站小伙伴")
+
+            # 过滤自己发出的回复或者已经回复过的通知
+            if sender_uid == my_uid or notif_id in replied_ids:
+                continue
+
+            business = item_data.get("business", "")
+            itype = item_data.get("type", "")
+            # 支持视频评论与二级跟帖回复 (business 为 '视频' 或 '评论', type 为 'video' 或 'reply')
+            if business not in ["视频", "评论"] and itype not in ["video", "reply"]:
+                continue
+
+            aid = item_data.get("subject_id")
+            source_id = item_data.get("source_id") # 对方回复的 rpid
+            root_id = item_data.get("root_id", 0)   # 根评论 rpid
+            title = item_data.get("title", "")
+            content = item_data.get("source_content", "").strip()
+            parent_content = item_data.get("root_reply_content", "").strip()
+
+            if not aid or not source_id or not content:
+                continue
+
+            root_rpid = root_id if root_id != 0 else source_id
+            parent_rpid = source_id
+
+            print(f"[Daemon] 💬 捕捉到用户【{sender_name}】在视频《{title[:20]}》下的回复: '{content}'", flush=True)
+
+            cat_reply = self.brain.generate_comment_reply(
+                sender_name=sender_name,
+                sender_content=content,
+                video_title=title,
+                my_parent_comment=parent_content
+            )
+
+            # 仿生安全等待 (模拟人类打字延时，防风控)
+            delay = random.uniform(5.0, 9.0)
+            time.sleep(delay)
+
+            resp = self.core.post_comment(aid, cat_reply, root=root_rpid, parent=parent_rpid)
+            status = "成功" if resp.get("success") else "失败"
+            self.log_activity("自动回复评论", f"用户: {sender_name} (《{title[:20]}》)", cat_reply, status=status, details=resp.get("message", ""))
+
+            self.state.setdefault("replied_comment_ids", []).append(notif_id)
+            if len(self.state["replied_comment_ids"]) > 500:
+                self.state["replied_comment_ids"] = self.state["replied_comment_ids"][-300:]
+
+            if resp.get("success"):
+                self.state["comment_replied_count_today"] = self.state.get("comment_replied_count_today", 0) + 1
+                print(f"[Daemon] 🎉 自动回复评论成功 -> 【{sender_name}】: '{cat_reply}'", flush=True)
+                results.append({"user": sender_name, "content": content, "reply": cat_reply, "success": True})
+            else:
+                print(f"[Daemon] ⚠ 自动回复评论失败 -> 【{sender_name}】: {resp.get('message')}", flush=True)
+                results.append({"user": sender_name, "content": content, "reply": cat_reply, "success": False, "error": resp.get("message")})
+
+        if results:
+            self.save_state()
+            self.export_interaction_audit_journal()
+        return results
+
+    def check_and_reply_private_messages(self) -> list[dict]:
+        """轮询 B 站站内私信，由 Gemini 3.8 Flash 结合猫娘人设自动智能回信"""
+        allow_pm = self.config.get("interaction", {}).get("allow_auto_reply_pm", True)
+        if not allow_pm:
+            return []
+
+        my_uid = str(self.config.get("auth", {}).get("dedeuserid", ""))
+        master_uid = str(self.config.get("profile", {}).get("master_uid", ""))
+        replied_keys = set(str(k) for k in self.state.get("replied_msg_keys", []))
+        max_daily_per_user = self.config.get("interaction", {}).get("max_pm_replies_per_user_daily", 8)
+        user_counts = self.state.setdefault("user_pm_reply_counts", {})
+
+        sessions = self.core.get_unread_sessions()
+        if not sessions:
+            return []
+
+        results = []
+        for s in sessions[:5]:
+            talker_id = s.get("talker_id")
+            if not talker_id or str(talker_id) == my_uid:
+                continue
+
+            str_talker = str(talker_id)
+            if str_talker != master_uid and user_counts.get(str_talker, 0) >= max_daily_per_user:
+                continue
+
+            msgs = self.core.get_session_messages(talker_id, size=3)
+            if not msgs:
+                continue
+
+            for msg in msgs:
+                sender_uid = str(msg.get("sender_uid", ""))
+                msg_key = str(msg.get("msg_key", ""))
+                msg_type = msg.get("msg_type", 1)
+
+                if sender_uid == my_uid or not msg_key or msg_key in replied_keys:
+                    continue
+                if msg_type != 1:
+                    continue
+
+                raw_content = msg.get("content", "")
+                text_content = ""
+                try:
+                    parsed_c = json.loads(raw_content)
+                    text_content = parsed_c.get("content", "").strip()
+                except Exception:
+                    text_content = str(raw_content).strip()
+
+                if not text_content:
+                    continue
+
+                # 过滤 B 站官方系统通知号与活动通报
+                if int(sender_uid) in {844424930131966} or "已成功参加" in text_content or "活动通知" in text_content:
+                    self.state.setdefault("replied_msg_keys", []).append(msg_key)
+                    continue
+
+                is_master = (sender_uid == master_uid)
+                sender_desc = f"主人 (UID: {sender_uid})" if is_master else f"小伙伴 (UID: {sender_uid})"
+                print(f"[Daemon] ✉ 捕捉到来自【{sender_desc}】的新私信: '{text_content}'", flush=True)
+
+                cat_reply = self.brain.generate_pm_reply(
+                    sender_name="主人" if is_master else "小伙伴",
+                    sender_uid=int(sender_uid),
+                    sender_msg=text_content
+                )
+
+                delay = random.uniform(5.0, 9.0)
+                time.sleep(delay)
+
+                resp = self.core.send_private_message(int(sender_uid), cat_reply)
+                status = "成功" if resp.get("success") else "失败"
+                self.log_activity("自动回复私信", f"UID: {sender_uid}", cat_reply, status=status, details=resp.get("message", ""))
+
+                self.state.setdefault("replied_msg_keys", []).append(msg_key)
+                if len(self.state["replied_msg_keys"]) > 500:
+                    self.state["replied_msg_keys"] = self.state["replied_msg_keys"][-300:]
+
+                user_counts[str_talker] = user_counts.get(str_talker, 0) + 1
+
+                if resp.get("success"):
+                    self.state["pm_replied_count_today"] = self.state.get("pm_replied_count_today", 0) + 1
+                    print(f"[Daemon] 🎉 自动回复私信成功 -> 【{sender_desc}】: '{cat_reply}'", flush=True)
+                    results.append({"uid": sender_uid, "msg": text_content, "reply": cat_reply, "success": True})
+                else:
+                    print(f"[Daemon] ⚠ 自动回复私信失败 -> 【{sender_desc}】: {resp.get('message')}", flush=True)
+                    results.append({"uid": sender_uid, "msg": text_content, "reply": cat_reply, "success": False, "error": resp.get("message")})
+                break
+
+        if results:
+            self.save_state()
+            self.export_interaction_audit_journal()
+        return results
+
+    def check_and_welcome_new_followers(self) -> list[dict]:
+        """检查新增关注粉丝，自动发送猫娘专属关注欢迎私信"""
+        allow_welcome = self.config.get("interaction", {}).get("allow_auto_reply_new_follower", True)
+        if not allow_welcome:
+            return []
+
+        master_uid = str(self.config.get("profile", {}).get("master_uid", ""))
+        welcomed = set(str(m) for m in self.state.get("welcomed_followers", []))
+        followers = self.core.get_my_followers(page=1, page_size=20)
+        if not followers:
+            return []
+
+        results = []
+        allow_follow_back = self.config.get("interaction", {}).get("auto_follow_back", False)
+
+        for f in followers:
+            mid = str(f.get("mid", ""))
+            uname = f.get("uname", "小伙伴")
+
+            if not mid or mid == master_uid or mid in welcomed:
+                continue
+
+            print(f"[Daemon] 🌟 发现新关注粉丝: 【{uname}】(UID: {mid})，准备发送关注欢迎语...", flush=True)
+
+            if allow_follow_back:
+                f_res = self.core.follow_user(int(mid))
+                if f_res.get("success"):
+                    print(f"[Daemon] 🤝 已自动回关新粉丝【{uname}】(互关达成)", flush=True)
+
+            welcome_msg = self.brain.generate_follower_welcome(uname, int(mid))
+
+            time.sleep(random.uniform(3.0, 6.0))
+
+            resp = self.core.send_private_message(int(mid), welcome_msg)
+            status = "成功" if resp.get("success") else "失败"
+            self.log_activity("关注自动回复", f"新粉丝: {uname} (UID: {mid})", welcome_msg, status=status, details=resp.get("message", ""))
+
+            self.state.setdefault("welcomed_followers", []).append(mid)
+            if len(self.state["welcomed_followers"]) > 1000:
+                self.state["welcomed_followers"] = self.state["welcomed_followers"][-600:]
+
+            if resp.get("success"):
+                self.state["follower_welcomed_today"] = self.state.get("follower_welcomed_today", 0) + 1
+                print(f"[Daemon] 🎉 成功向新粉丝【{uname}】送达关注欢迎私信: '{welcome_msg}'", flush=True)
+                results.append({"uname": uname, "mid": mid, "msg": welcome_msg, "success": True})
+            else:
+                print(f"[Daemon] ⚠ 向新粉丝【{uname}】发送欢迎私信失败: {resp.get('message')}", flush=True)
+                results.append({"uname": uname, "mid": mid, "msg": welcome_msg, "success": False, "error": resp.get("message")})
+
+        if results:
+            self.save_state()
+            self.export_interaction_audit_journal()
+        return results
 
     def generate_morning_journal_file(self) -> str:
         self.update_stamina()
@@ -641,6 +1090,39 @@ class HajimiDaemon:
                 else:
                     self.next_auto_cruise_time = now_ts
 
+                # 4. 定期检查评论区回复与站内私信 (每 90 秒安全轮询)
+                if now_ts - getattr(self, "_last_inbox_check_time", 0) >= 90:
+                    self._last_inbox_check_time = now_ts
+                    try:
+                        self.check_and_reply_comments()
+                    except Exception as e:
+                        print(f"[Daemon] 自动回评异常: {e}", flush=True)
+                    try:
+                        self.check_and_reply_private_messages()
+                    except Exception as e:
+                        print(f"[Daemon] 自动私信异常: {e}", flush=True)
+                    try:
+                        self.check_and_welcome_new_followers()
+                    except Exception as e:
+                        print(f"[Daemon] 关注自动回复异常: {e}", flush=True)
+
+                # 5. 定期向 AI 运营同行学习并互动交流 (每 1800 秒 / 30 分钟轮询)
+                if now_ts - getattr(self, "_last_peer_check_time", 0) >= 1800:
+                    self._last_peer_check_time = now_ts
+                    try:
+                        print(f"[{now_hm}] 🤝 启动 AI 运营同行研学与生态互访...", flush=True)
+                        self.check_and_interact_ai_peers()
+                    except Exception as e:
+                        print(f"[Daemon] 同行研学互访异常: {e}", flush=True)
+
+                # 6. 定期对主人作品进行专属应援护航 (每 3600 秒 / 1 小时检查一次主人新视频)
+                if now_ts - getattr(self, "_last_master_boost_time", 0) >= 3600:
+                    self._last_master_boost_time = now_ts
+                    try:
+                        self.interact_with_master_videos()
+                    except Exception as e:
+                        print(f"[Daemon] 主人作品专属护航异常: {e}", flush=True)
+
                 gap_from_last = now_ts - self.last_cruise_time
 
                 if in_win and not self.is_cruising and (gap_from_last >= cruise_gap):
@@ -671,6 +1153,11 @@ if __name__ == "__main__":
         print("[Daemon] 正在执行主人专属作品应援与互动护航...")
         res = daemon.interact_with_master_videos()
         print(f"成功处理 {res.get('count')} 部主人视频！")
+    elif "--reply-check" in sys.argv:
+        print("[Daemon] 正在检查评论回复与新私信...")
+        c_res = daemon.check_and_reply_comments()
+        p_res = daemon.check_and_reply_private_messages()
+        print(f"检查完成: 自动回复评论 {len(c_res)} 条, 自动回复私信 {len(p_res)} 条")
     elif "--loop" in sys.argv or len(sys.argv) == 1:
         daemon.start_daemon_loop()
     else:

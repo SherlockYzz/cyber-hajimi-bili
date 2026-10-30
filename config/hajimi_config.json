@@ -3,8 +3,8 @@
     "role_name": "双子星",
     "call_master": "主人",
     "self_name": "闪闪",
-    "master_uid": 1497345954,
-    "master_name": "折木柯南",
+    "master_uid": 0,
+    "master_name": "主人",
     "persona_file": "docs/gemini_persona.md",
     "current_outfit": "经典蓝白女仆装"
   },
@@ -176,11 +176,11 @@
     "reasoning_effort": "medium"
   },
   "auth": {
-    "is_logged_in": true,
-    "dedeuserid": "3632310333213330",
-    "sessdata": "f54a6d37%2C1808902553%2Cdcb93%2Aa2CjCx1_uaSqB6n81x_ttb4hQZSzOTdsriTKxH8-9ZNURfrpT3DqNz5kb-Xudae7Wa0gISVlVMU0xuZktqVGN3MzdNSW1xVi1DSTZlajNNMXRXc1pOcmJQWUdlQ3ROaGhlUXQ5TjFhbmxzZ0dzVjJQYXFqa2x2UzI2dzQtcE9BdkNUSGs0OThMeGFnIIEC",
-    "bili_jct": "1c87e9b272de86f0a5cc3ec1be23682a",
-    "buvid3": "8329268B-4BDB-70EB-C66A-4A369CCAD1B198335infoc",
-    "buvid4": "AFE7DA25-B39E-4056-479C-44A63D5456B398335-026103017-+DYAS6/suyoLJK9dcvlErg=="
+    "is_logged_in": false,
+    "dedeuserid": "",
+    "sessdata": "",
+    "bili_jct": "",
+    "buvid3": "",
+    "buvid4": ""
   }
 }

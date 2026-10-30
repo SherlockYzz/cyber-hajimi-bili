@@ -855,6 +855,14 @@ class BiliHajimiCore:
             return resp.get("data", {}).get("items", [])
         return []
 
+    def get_reply_notifications(self) -> list[dict]:
+        """拉取 B 站通知中心收到的回复评论（谁回复了我）"""
+        url = "https://api.bilibili.com/x/msgfeed/reply"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("items", [])
+        return []
+
     def get_unread_sessions(self) -> list[dict]:
         """拉取最近的私信会话列表"""
         url = "https://api.vc.bilibili.com/session_svr/v1/session_svr/new_sessions?begin_ts=0&build=0&mobi_app=web"
@@ -862,6 +870,131 @@ class BiliHajimiCore:
         if resp.get("code") == 0:
             return resp.get("data", {}).get("session_list", [])
         return []
+
+    def get_session_messages(self, talker_id: int, size: int = 5) -> list[dict]:
+        """拉取与指定用户 (talker_id) 的最近历史私信消息"""
+        url = "https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs"
+        params = {
+            "talker_id": int(talker_id),
+            "session_type": 1,
+            "size": int(size)
+        }
+        resp = self._request(url, params=params)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("messages", [])
+        return []
+
+    def get_my_followers(self, page: int = 1, page_size: int = 20) -> list[dict]:
+        """获取关注我的粉丝列表（按关注时间倒序排列）"""
+        my_uid = self.config.get("auth", {}).get("dedeuserid", "")
+        if not my_uid:
+            return []
+        url = f"https://api.bilibili.com/x/relation/followers?vmid={my_uid}&pn={page}&ps={page_size}&order=desc"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("list", [])
+        return []
+
+    def follow_user(self, fid: int) -> dict:
+        """关注指定用户（互相关注）"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+        url = "https://api.bilibili.com/x/relation/modify"
+        payload = {
+            "fid": int(fid),
+            "act": 1,
+            "re_src": 11,
+            "csrf": csrf
+        }
+        resp = self._request(url, method="POST", data=payload, headers={"Referer": f"https://space.bilibili.com/{fid}/"})
+        code = resp.get("code")
+        if code == 0 or code == 22014:
+            return {"success": True, "message": "关注成功！"}
+        return {"success": False, "message": resp.get("message", "关注失败"), "code": code}
+
+
+    def upload_picture_to_bfs(self, image_path: str) -> dict:
+        """上传本地图片到 B 站 BFS 动态图床"""
+        if not os.path.exists(image_path):
+            return {"success": False, "message": f"图片文件不存在: {image_path}"}
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+
+        url = "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs"
+        headers = {
+            "User-Agent": self.user_agent,
+            "Cookie": self.get_cookie_header(),
+            "Origin": "https://t.bilibili.com",
+            "Referer": "https://t.bilibili.com/"
+        }
+        try:
+            with open(image_path, "rb") as f:
+                files = {"file_up": (os.path.basename(image_path), f, "image/jpeg")}
+                data = {"category": "daily", "csrf": csrf}
+                res = requests.post(url, files=files, data=data, headers=headers, timeout=20)
+                resp = res.json()
+                if resp.get("code") == 0:
+                    d = resp.get("data", {})
+                    return {
+                        "success": True,
+                        "image_url": d.get("image_url"),
+                        "image_width": d.get("image_width"),
+                        "image_height": d.get("image_height"),
+                        "img_size": d.get("img_size")
+                    }
+                return {"success": False, "message": resp.get("message", "上传失败"), "code": resp.get("code")}
+        except Exception as e:
+            return {"success": False, "message": f"上传异常: {e}"}
+
+    def post_picture_dynamic(self, text: str, image_path: str) -> dict:
+        """发布带图片的 B 站动态"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+
+        up_res = self.upload_picture_to_bfs(image_path)
+        if not up_res.get("success"):
+            return {"success": False, "message": f"图片上传失败: {up_res.get('message')}"}
+
+        url = "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/create_draw"
+        headers = {
+            "User-Agent": self.user_agent,
+            "Cookie": self.get_cookie_header(),
+            "Origin": "https://t.bilibili.com",
+            "Referer": "https://t.bilibili.com/",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        pictures = [{
+            "img_src": up_res["image_url"],
+            "img_width": up_res["image_width"],
+            "img_height": up_res["image_height"],
+            "img_size": up_res["img_size"]
+        }]
+        data = {
+            "biz": 3,
+            "category": 3,
+            "type": 0,
+            "pictures": json.dumps(pictures),
+            "description": text,
+            "csrf": csrf,
+            "csrf_token": csrf
+        }
+        try:
+            res = requests.post(url, data=data, headers=headers, timeout=15)
+            resp = res.json()
+            if resp.get("code") == 0:
+                dyn_data = resp.get("data", {})
+                return {
+                    "success": True,
+                    "message": "动态发布成功！",
+                    "dynamic_id": dyn_data.get("dynamic_id_str") or dyn_data.get("dynamic_id"),
+                    "doc_id": dyn_data.get("doc_id")
+                }
+            return {"success": False, "message": resp.get("message", "发布动态失败"), "code": resp.get("code")}
+        except Exception as e:
+            return {"success": False, "message": f"发布动态异常: {e}"}
 
 
 if __name__ == "__main__":
