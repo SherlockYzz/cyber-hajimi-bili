@@ -1,0 +1,5 @@
+# 赛博养哈基米 (Cyber-Hajimi) 依赖清单
+# 核心通信、签名与图像依赖已自带纯 Python 实现，以下为优化体验推荐库：
+requests>=2.31.0
+qrcode>=8.0
+Pillow>=10.0.0

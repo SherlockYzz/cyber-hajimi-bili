@@ -1,0 +1,21 @@
+{
+  "command": "python",
+  "args": [
+    "../../src/hajimi_web_ui.py",
+    "--no-browser"
+  ],
+  "restart_policy": "always",
+  "display_name": "养Gemini (闪闪)",
+  "description": "基于 Gemini 3.8 Flash 的伴生猫娘闪闪控制中心与人设配置面板",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "养Gemini",
+    "views": [
+      {
+        "title": "养Gemini",
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE"
+      }
+    ]
+  }
+}

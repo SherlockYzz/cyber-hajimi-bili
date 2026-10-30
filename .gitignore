@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Cyber-Hajimi Local Cache & Personal Data
+config/hajimi_state.json
+images/qrcode_login.png
+docs/journals/哈基米手记_20*.md
+docs/journals/晨思手记_20*.md
+docs/journals/晚读手记_20*.md
+*.log
+
+# Antigravity & IDE
+.gemini/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini

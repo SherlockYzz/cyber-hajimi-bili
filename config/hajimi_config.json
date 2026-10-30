@@ -1,0 +1,100 @@
+{
+  "profile": {
+    "role_name": "闪闪",
+    "call_master": "主人",
+    "self_name": "人家",
+    "master_uid": 0,
+    "master_name": "主人",
+    "persona_file": "docs/gemini_persona.md",
+    "current_outfit": "青春水手校服"
+  },
+  "preferences": {
+    "target_zones": [
+      "数码",
+      "科技",
+      "知识",
+      "游戏",
+      "动画",
+      "鬼畜",
+      "影视"
+    ],
+    "keywords_prefer": [
+      "AI",
+      "大模型",
+      "Agent",
+      "黑科技",
+      "显卡",
+      "极客",
+      "深度学习",
+      "机器人",
+      "开源"
+    ],
+    "blacklist_up": [],
+    "blacklist_keywords": [
+      "震惊",
+      "无良营销号",
+      "开箱实况",
+      "标题党",
+      "低俗",
+      "假新闻",
+      "纯剧透"
+    ]
+  },
+  "schedule": {
+    "active_windows": [
+      {
+        "name": "晨光清醒",
+        "start": "09:30",
+        "end": "11:30"
+      },
+      {
+        "name": "午后巡逻",
+        "start": "14:30",
+        "end": "17:30"
+      },
+      {
+        "name": "夜猫黄金档",
+        "start": "20:00",
+        "end": "23:45"
+      }
+    ],
+    "stamina_max": 100,
+    "stamina_recovery_per_hour": 15,
+    "stamina_cost_per_video": 8,
+    "mood_skip_chance": 0.15,
+    "max_videos_per_cycle": 6,
+    "max_deep_reads_per_cycle": 3,
+    "max_at_per_day": 3,
+    "morning_journal_time": "09:30",
+    "evening_journal_time": "22:30"
+  },
+  "interaction": {
+    "at_score_threshold": 8.5,
+    "allow_comment": true,
+    "allow_private_message": true,
+    "allow_like": false,
+    "allow_coin": false,
+    "allow_fav": false,
+    "comment_style": "闪闪猫娘口吻+元气吐槽+@主人"
+  },
+  "risk_control": {
+    "min_request_interval_ms": 2500,
+    "max_request_interval_ms": 4500,
+    "enable_wbi_sign": true,
+    "auto_backoff_on_412": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  },
+  "ai_engine": {
+    "agy_cli_path": "C:\\Users\\Lenovo\\.gemini\\bin\\agy.exe",
+    "model_name": "gemini-3.8-flash-high",
+    "reasoning_effort": "medium"
+  },
+  "auth": {
+    "is_logged_in": false,
+    "dedeuserid": "",
+    "sessdata": "",
+    "bili_jct": "",
+    "buvid3": "9A39D969-B9AA-08A9-D95D-EA9852E9462902370infoc",
+    "buvid4": ""
+  }
+}

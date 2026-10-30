@@ -1,0 +1,29 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "cyber-hajimi",
+  "displayName": "赛博养Gemini · 猫娘双子星 (Cyber-Gemini Twins)",
+  "description": "基于 Google Gemini 原生驱动的 B站伴生猫娘双子星（姐姐 Gemini 4 深研星神 + 妹妹 Gemini 3.8 Flash 机灵管家）。具备异色双眸、仿生作息、WBI验签、CC字幕深度品鉴、评论区@主人与双本生活手记。",
+  "version": "2.0.0",
+  "logo": "logo.svg",
+  "suggestedPrompts": [
+    "呼唤 Gemini 双子星，巡航今天的 B 站推荐流",
+    "让妹妹闪闪写一份今天的晚读精选手记",
+    "让姐姐 Gemini 4 深度审阅今日高分视频",
+    "打开双子星控制中心与立绘看板"
+  ],
+  "author": {
+    "name": "Gemini Twins Cyber Lab",
+    "url": "https://github.com"
+  },
+  "homepage": "https://github.com",
+  "license": "MIT",
+  "keywords": [
+    "gemini",
+    "bilibili",
+    "cyber-pet",
+    "gemini-3.8-flash",
+    "gemini-4-carbon",
+    "anime-companion",
+    "autonomous-agent"
+  ]
+}
