@@ -51,6 +51,20 @@ from bili_hajimi_core import BiliHajimiCore
 from hajimi_brain import HajimiBrain
 
 
+def is_safe_comment(text: str) -> bool:
+    """严格检验拟外发评论文本：严禁包含任何过激、贬低、挑刺或负面劝退词汇，必须维持文明知性与良好形象"""
+    if not text or len(text.strip()) == 0:
+        return False
+    toxic_words = [
+        "画大饼", "垃圾", "水货", "水课", "快撤退", "快跑", "避雷", "避坑",
+        "骗子", "骗人", "销售片", "引流骗", "劣质", "抄袭", "恶心", "差劲",
+        "不要脸", "毒素", "炸毛", "吐掉", "营销号", "割韭菜", "下头", "烂片",
+        "难看", "洗脑", "智商税", "别看", "快溜", "溜了", "坑人", "太差",
+        "退钱", "毁原作", "恶俗", "毫无价值", "恶评", "劝退", "忽悠", "糊弄"
+    ]
+    return not any(w in text for w in toxic_words)
+
+
 class HajimiDaemon:
     def __init__(self, config_path=CONFIG_PATH):
         self.config_path = Path(config_path)
@@ -76,6 +90,8 @@ class HajimiDaemon:
             "fav_count_today": 0,
             "follower_welcomed_today": 0,
             "master_pm_count_today": 0,
+            "lottery_joined_count_today": 0,
+            "joined_lottery_dyn_ids": [],
             "welcomed_followers": [],
             "user_pm_reply_counts": {},
             "replied_comment_ids": [],
@@ -106,6 +122,7 @@ class HajimiDaemon:
                         saved["fav_count_today"] = 0
                         saved["follower_welcomed_today"] = 0
                         saved["master_pm_count_today"] = 0
+                        saved["lottery_joined_count_today"] = 0
                         saved["user_pm_reply_counts"] = {}
                     return {**default_state, **saved}
             except Exception:
@@ -352,10 +369,20 @@ class HajimiDaemon:
                     peaks = ", ".join(dm_insights.get("peak_intervals", [])[:2])
                     _log(f"  🔥 弹幕热力情报: 吞吐 {dm_insights['total_danmaku']} 条弹幕，高能爆发点: {peaks}")
 
-            # 4. CC 双语字幕文本
+            # 4. CC 双语字幕文本 (支持多P大课深度联读，避免首P导学误判)
             subtitles = ""
             if cid:
                 subtitles = self.core.get_video_subtitles(bvid, cid)
+                pages = detail.get("pages", [])
+                if len(pages) > 1:
+                    first_part = pages[0].get("part", "")
+                    intro_kw = ["导学", "大纲", "前言", "绪论", "介绍", "先导", "开篇"]
+                    if any(k in first_part for k in intro_kw) and len(pages) >= 2:
+                        p2_cid = pages[1].get("cid")
+                        if p2_cid:
+                            p2_sub = self.core.get_video_subtitles(bvid, p2_cid)
+                            if p2_sub:
+                                subtitles = f"【P1 {first_part} 字幕摘要】:\n{subtitles[:3000]}\n\n【P2 {pages[1].get('part')} 正式核心章节字幕】:\n{p2_sub[:10000]}"
                 if subtitles:
                     _log(f"  ✓ 成功抓取 CC 字幕 (长度 {len(subtitles)} 字)")
                 else:
@@ -408,31 +435,17 @@ class HajimiDaemon:
             self.state.setdefault("recent_evaluations", []).insert(0, eval_entry)
             self.state["recent_evaluations"] = self.state["recent_evaluations"][:50]
 
-            # 1. 弹幕应援 / 吐槽互动
-            if allow_danmaku and cid:
-                if score >= 8.0:
-                    dm_txt = "🐾 闪闪（Gemini 3.8 Flash）发现高能宝藏！为神作疯狂打call喵！✨"
-                    dm_col = 16766720 # 金黄
-                elif score <= 4.0:
-                    dm_txt = "(飞机耳炸毛) 闪闪一口吐掉了营销号毒素喵！"
-                    dm_col = 11184810 # 星云紫
-                else:
-                    dm_txt = "🐾 闪闪爪印打卡~ 异色双眸正在品鉴中喵~"
-                    dm_col = 16766720
-                dm_res = self.core.send_danmaku(cid, bvid, dm_txt, progress_ms=random.randint(2500, 8000), color=dm_col)
-                status = "成功" if dm_res.get("success") else "失败"
-                self.log_activity("发弹幕", f"[{bvid}] {detail.get('title')[:30]}", dm_txt, status=status, details=dm_res.get("message", ""))
-                if dm_res.get("success"):
-                    _log(f"  💬 投喂弹幕成功: \"{dm_txt}\"")
-                else:
-                    _log(f"  ⚠ 投喂弹幕反馈: {dm_res.get('message')}")
-                time.sleep(random.uniform(3.0, 5.0))
-
-            # 2. 评论与 @ 主人互动 (主人铁律: 一旦评论，必须同时 @主人)
+            # =========================================================================
+            # 宝藏视频铁律门禁（主人绝对指令）：
+            # 只有 score >= threshold 的极品宝藏视频，才允许执行任何公开互动！
+            # 包括：发弹幕、发主楼评论、参与热评讨论、点赞、收藏与向主人私信推荐。
+            # 对于非宝藏视频，全流程保持绝对礼貌静默：不发弹幕、不发评论、不参与讨论，
+            # 绝不在他人评论区留痕，绝不言语过激，不给别人留下不良印象，也不向主人汇报任何负面内容。
+            # =========================================================================
             at_map = {master_name: str(master_uid)} if master_uid and master_name else {}
 
             if score >= threshold:
-                _log(f"  ✨ 发现极品宝藏视频！收入今日手记备选池！")
+                _log(f"  ✨ 【宝藏视频认证成功】评分: {score}分 (>= 门槛{threshold}分)，准许执行高质公开互动与主人推荐！")
                 self.state.setdefault("treasures_today", []).append({
                     "bvid": bvid,
                     "title": eval_res.get("title", ""),
@@ -442,6 +455,20 @@ class HajimiDaemon:
                     "cat_comment": eval_res.get("cat_comment", ""),
                 })
 
+                # 1. 宝藏视频专属应援弹幕 (积极正面、文明治愈)
+                if allow_danmaku and cid:
+                    dm_txt = "🐾 闪闪（Gemini 3.8 Flash）发现高能宝藏！为神作疯狂打call喵！✨"
+                    dm_col = 16766720 # 暖阳金黄
+                    time.sleep(random.uniform(2.5, 4.5))
+                    dm_res = self.core.send_danmaku(cid, bvid, dm_txt, progress_ms=random.randint(2500, 8000), color=dm_col)
+                    status = "成功" if dm_res.get("success") else "失败"
+                    self.log_activity("发弹幕", f"[{bvid}] {detail.get('title')[:30]}", dm_txt, status=status, details=dm_res.get("message", ""))
+                    if dm_res.get("success"):
+                        _log(f"  💬 宝藏视频投喂应援弹幕成功: \"{dm_txt}\"")
+                    else:
+                        _log(f"  ⚠ 投喂弹幕反馈: {dm_res.get('message')}")
+
+                # 2. 宝藏视频发表品鉴评论并 @主人
                 if allow_comment and aid:
                     comment_text = eval_res.get("cat_comment", "")
                     nugget = eval_res.get("knowledge_nugget", "").strip()
@@ -450,17 +477,78 @@ class HajimiDaemon:
                     if master_name and f"@{master_name}" not in comment_text:
                         comment_text = f"@{master_name} " + comment_text
 
-                    _log(f"  💬 正在 B 站评论区发布猫猫脚印并 @ 主人: {comment_text}")
-                    comment_res = self.core.post_comment(aid, comment_text, at_name_to_mid=at_map)
-                    c_status = "成功" if comment_res.get("success") else "失败"
-                    self.log_activity("发评论与@主人", f"[{bvid}] {detail.get('title')[:30]}", comment_text, status=c_status, details=comment_res.get("message", ""))
-                    if comment_res.get("success"):
-                        self.state["at_count_today"] = self.state.get("at_count_today", 0) + 1
-                        _log("  🎉 评论与 @ 互动成功！")
+                    # 安全底线审查：严禁任何负面、攻击、挑刺或过激词汇，只留正面文明好印象
+                    if not is_safe_comment(comment_text):
+                        _log(f"  🛡 安全风控拦截：评论文本包含不当或过激词汇，已自动拦截，取消在公共评论区发布！内容: {comment_text[:40]}...")
+                        self.log_activity("评论安全拦截", f"[{bvid}] {detail.get('title')[:30]}", comment_text, status="拦截", details="包含过激/负面词汇，安全机制拒绝外发")
                     else:
-                        _log(f"  ⚠ 评论发布反馈: {comment_res.get('message')}")
+                        time.sleep(random.uniform(3.0, 5.5))
+                        _log(f"  💬 正在 B 站评论区发布宝藏品鉴并 @ 主人: {comment_text[:40]}...")
+                        comment_res = self.core.post_comment(aid, comment_text, at_name_to_mid=at_map)
+                        c_status = "成功" if comment_res.get("success") else "失败"
+                        self.log_activity("发评论与@主人", f"[{bvid}] {detail.get('title')[:30]}", comment_text, status=c_status, details=comment_res.get("message", ""))
+                        if comment_res.get("success"):
+                            self.state["at_count_today"] = self.state.get("at_count_today", 0) + 1
+                            _log("  🎉 宝藏品鉴评论与 @ 互动成功！")
+                        else:
+                            _log(f"  ⚠ 评论发布反馈: {comment_res.get('message')}")
 
-                # 给主人发私信推荐（严选主人偏好领域：动漫、AI、高能MAD、大模型、关注UP主，杜绝八卦/吃播/无脑内容）
+                # 3. 宝藏视频参与社区高赞热评讨论 (仅限宝藏视频且发言友好得体)
+                target_rpid = eval_res.get("target_reply_rpid", 0)
+                disc_reply = eval_res.get("discussion_reply", "").strip()
+                if target_rpid and disc_reply and allow_comment:
+                    if not is_safe_comment(disc_reply):
+                        _log(f"  🛡 安全风控拦截：热评讨论包含不当词汇，已取消跟帖！")
+                    else:
+                        time.sleep(random.uniform(3.5, 5.5))
+                        disc_res = self.core.post_comment(aid, disc_reply, root=target_rpid, parent=target_rpid)
+                        disc_status = "成功" if disc_res.get("success") else "失败"
+                        self.log_activity("参与热评讨论", f"[{bvid}] 跟帖ID: {target_rpid}", disc_reply, status=disc_status, details=disc_res.get("message", ""))
+                        if disc_res.get("success"):
+                            _log(f"  💬 成功参与宝藏视频高赞热评跟帖讨论: \"{disc_reply}\"")
+                        else:
+                            _log(f"  ⚠ 参与热评讨论反馈: {disc_res.get('message')}")
+
+                # 4. 宝藏视频智能点赞 (评分 >= 8.0)
+                allow_like = self.config.get("interaction", {}).get("allow_like", True)
+                like_thresh = self.config.get("interaction", {}).get("like_score_threshold", 8.0)
+                max_likes_daily = self.config.get("interaction", {}).get("max_likes_per_day", 15)
+                current_likes = self.state.get("like_count_today", 0)
+
+                if allow_like and aid and score >= like_thresh and current_likes < max_likes_daily:
+                    time.sleep(random.uniform(3.0, 5.0))
+                    like_res = self.core.like_video(aid, like=1)
+                    if like_res.get("success"):
+                        self.state["like_count_today"] = current_likes + 1
+                        _log(f"  👍 综合评分 {score}，为宝藏视频点赞成功！")
+                        self.log_activity("视频点赞", f"[{bvid}] {detail.get('title')[:30]}", f"评分 {score} 点赞", status="成功")
+                    else:
+                        _log(f"  ⚠ 点赞反馈: {like_res.get('message')}")
+
+                # 5. 极品技术视频精选收藏 (评分 >= 9.0)
+                allow_fav = self.config.get("interaction", {}).get("allow_fav", True)
+                fav_thresh = self.config.get("interaction", {}).get("fav_score_threshold", 9.0)
+                max_favs_daily = self.config.get("interaction", {}).get("max_favs_per_day", 5)
+                current_favs = self.state.get("fav_count_today", 0)
+
+                all_text = (detail.get("title", "") + " " + detail.get("desc", "")).lower()
+                is_valuable_content = any(k in all_text for k in [
+                    "ai", "大模型", "算法", "深度学习", "科普", "原理", "计算机", "python",
+                    "transformer", "agent", "科研", "知识", "数学", "物理", "原画", "mad",
+                    "8d", "环绕音乐", "全景声", "空间音频", "学习乐队", "乐队", "孤独摇滚", "新海诚", "radwimps"
+                ])
+
+                if allow_fav and aid and score >= fav_thresh and is_valuable_content and current_favs < max_favs_daily:
+                    time.sleep(random.uniform(3.0, 5.0))
+                    fav_res = self.core.fav_video(aid)
+                    if fav_res.get("success"):
+                        self.state["fav_count_today"] = current_favs + 1
+                        _log(f"  ⭐ 评分 {score} 极品神作，已自动加入优质收藏夹！")
+                        self.log_activity("视频收藏", f"[{bvid}] {detail.get('title')[:30]}", f"评分 {score} 收藏", status="成功")
+                    else:
+                        _log(f"  ⚠ 收藏反馈: {fav_res.get('message')}")
+
+                # 6. 给主人发精选私信推荐（只推荐极品好视频，杜绝汇报任何坏的或负面内容）
                 title_text = target.get("title", "")
                 pref_kws = self.config.get("preferences", {}).get("keywords_prefer", [])
                 black_kws = self.config.get("preferences", {}).get("blacklist_keywords", [])
@@ -484,7 +572,7 @@ class HajimiDaemon:
                     nugget = eval_res.get("knowledge_nugget", "").strip()
                     nugget_str = f"\n\n💡【知识科普与干货小贴士】\n{nugget}\n" if nugget else "\n"
                     pm_text = (
-                        f"🐾 主人！闪闪为您精选了【超高分神作】《{target.get('title')}》！\n"
+                        f"🐾 主人！闪闪为您精选了【超高分宝藏神作】《{target.get('title')}》！\n"
                         f"评分: {score} 分 | 亮点: {eval_res.get('highlight')}"
                         f"{nugget_str}"
                         f"🔗 链接: https://www.bilibili.com/video/{bvid}"
@@ -494,7 +582,7 @@ class HajimiDaemon:
                     self.log_activity("发站内私信", f"主人UID: {master_uid}", pm_text, status=pm_status, details=pm_res.get("message", ""))
                     if pm_res.get("success"):
                         self.state["master_pm_count_today"] = current_master_pm_count + 1
-                        _log(f"  ✉ 成功给主人发送精选私信！(今日第 {current_master_pm_count + 1}/{max_master_pms} 条，不轰炸)")
+                        _log(f"  ✉ 成功给主人发送宝藏私信！(今日第 {current_master_pm_count + 1}/{max_master_pms} 条)")
                     else:
                         _log(f"  ⚠ 站内私信反馈: {pm_res.get('message')}")
                 elif current_master_pm_count >= max_master_pms:
@@ -503,75 +591,17 @@ class HajimiDaemon:
                     _log(f"  ℹ 视频评分 ({score}分) 未达到私信推送门槛 ({master_pm_min_score}分)，仅留评@主人并归入晚读手记。")
                 elif not is_preferred:
                     _log(f"  ℹ 该视频虽达标但非主人重点偏向领域（已过滤私信打扰）。")
+
+                # 7. 成长性人格自主进化
+                if win_mode == "anime_and_ai_growth" or score >= 7.5:
+                    evolve_entry = self.brain.evolve_persona(detail, eval_res)
+                    if evolve_entry:
+                        _log(f"  🧬 闪闪成长性人格进化: 领悟新见解并写入 docs/gemini_persona.md！")
+
             else:
-                # 常规/避雷视频：依然遵从主人“一旦评论必须同时@我”的要求
-                if allow_comment and aid:
-                    cat_note = eval_res.get("cat_comment", "")
-                    if not cat_note:
-                        cat_note = f"🐾 闪闪（Gemini 3.8 Flash）路过打卡喵~ 核心亮点：{eval_res.get('highlight', '已留爪印')[:50]}"
-                    if master_name and f"@{master_name}" not in cat_note:
-                        cat_note = f"@{master_name} " + cat_note
-
-                    c_res = self.core.post_comment(aid, cat_note, at_name_to_mid=at_map)
-                    c_status = "成功" if c_res.get("success") else "失败"
-                    self.log_activity("发品鉴评论与@主人", f"[{bvid}] {detail.get('title')[:30]}", cat_note, status=c_status, details=c_res.get("message", ""))
-                    if c_res.get("success"):
-                        self.state["at_count_today"] = self.state.get("at_count_today", 0) + 1
-                        _log(f"  🐾 留下猫猫品鉴评语并 @主人: \"{cat_note[:35]}...\"")
-                    else:
-                        _log(f"  ⚠ 评论发布反馈: {c_res.get('message')}")
-
-            # 3. 参与社区高赞热评讨论 (跟帖互动)
-            target_rpid = eval_res.get("target_reply_rpid", 0)
-            disc_reply = eval_res.get("discussion_reply", "").strip()
-            if target_rpid and disc_reply and allow_comment:
-                time.sleep(random.uniform(3.5, 5.5))
-                disc_res = self.core.post_comment(aid, disc_reply, root=target_rpid, parent=target_rpid)
-                disc_status = "成功" if disc_res.get("success") else "失败"
-                self.log_activity("参与热评讨论", f"[{bvid}] 跟帖ID: {target_rpid}", disc_reply, status=disc_status, details=disc_res.get("message", ""))
-                if disc_res.get("success"):
-                    _log(f"  💬 成功参与社区高赞热评跟帖讨论: \"{disc_reply}\"")
-                else:
-                    _log(f"  ⚠ 参与热评讨论反馈: {disc_res.get('message')}")
-
-            # 4. 晚上时段或高质量视频：成长性人格自主进化
-            if win_mode == "anime_and_ai_growth" or score >= 7.5:
-                evolve_entry = self.brain.evolve_persona(detail, eval_res)
-                if evolve_entry:
-                    _log(f"  🧬 闪闪成长性人格进化: 领悟新见解并写入 docs/gemini_persona.md！")
-
-            
-            # 3. 优质视频智能点赞 (较好的视频评分 >= 8.0，严格抗风控每日上限)
-            allow_like = self.config.get("interaction", {}).get("allow_like", True)
-            like_thresh = self.config.get("interaction", {}).get("like_score_threshold", 8.0)
-            max_likes_daily = self.config.get("interaction", {}).get("max_likes_per_day", 15)
-            current_likes = self.state.get("like_count_today", 0)
-
-            if allow_like and aid and score >= like_thresh and current_likes < max_likes_daily:
-                time.sleep(random.uniform(4.0, 7.0)) # 拟人化延迟
-                like_res = self.core.like_video(aid, like=1)
-                if like_res.get("success"):
-                    self.state["like_count_today"] = current_likes + 1
-                    _log(f"  👍 综合评分 {score}，为优质视频点赞成功！")
-                    self.log_activity("视频点赞", f"[{bvid}] {detail.get('title')[:30]}", f"评分 {score} 点赞", status="成功")
-                else:
-                    _log(f"  ⚠ 点赞反馈: {like_res.get('message')}")
-
-            # 4. 高价值科普/技术视频精选分类收藏 (评分 >= 9.0 且为硬核科普/技术，自动建夹归档)
-            allow_fav = self.config.get("interaction", {}).get("allow_fav", True)
-            fav_thresh = self.config.get("interaction", {}).get("fav_score_threshold", 9.0)
-            max_favs_daily = self.config.get("interaction", {}).get("max_favs_per_day", 5)
-            current_favs = self.state.get("fav_count_today", 0)
-
-            all_text = (detail.get("title", "") + " " + detail.get("desc", "")).lower()
-            is_valuable_content = any(k in all_text for k in [
-                "ai", "大模型", "算法", "深度学习", "科普", "原理", "计算机", "python",
-                "transformer", "agent", "科研", "知识", "数学", "物理", "原画", "mad",
-                "8d", "环绕音乐", "全景声", "空间音频", "学习乐队", "乐队", "孤独摇滚", "新海诚", "radwimps"
-            ])
-
-            if allow_fav and aid and score >= fav_thresh and is_valuable_content and current_favs < max_favs_daily:
-                time.sleep(random.uniform(3.0, 6.0)) # 拟人化延迟
+                # 【严格静默熔断】：非宝藏视频，全流程严格静默！不发弹幕、不发评论、不参与讨论、不点赞收藏、绝不向主人推送任何负面评价！
+                _log(f"  ℹ 视频评分 ({score}分) 低于宝藏门槛 ({threshold}分)，全流程严格静默：不发弹幕、不发评论、不参与讨论、不向主人推送。")
+                self.log_activity("非宝藏视频静默跳过", f"[{bvid}] {detail.get('title')[:30]}", f"评分: {score}分 (低于宝藏门槛{threshold}分，全流程严格静默)", status="静默跳过", details="唯宝藏才互动铁律：非宝藏内容绝对不发表任何公开言论，只向主人推荐好的，不报坏的")
                 # 仿照主人同款收藏夹进行智能分类投递
                 if any(k in all_text for k in ["8d", "环绕音乐", "全景声", "空间音频", "沉浸式音频", "双耳音频"]):
                     target_folder = "【闪闪精选】8D 环绕音乐"
@@ -703,17 +733,18 @@ class HajimiDaemon:
             self.state.setdefault("recent_articles", []).insert(0, eval_entry)
             self.state["recent_articles"] = self.state["recent_articles"][:50]
 
-            # 若专栏质量达标 (>= 7.5)，进行点赞并发表评论
-            if score >= 7.5:
+            # 专栏宝藏门禁：只有评分 >= 8.0 的优质干货专栏才互动与留评
+            threshold = self.config.get("interaction", {}).get("comment_score_threshold", 8.0)
+            if score >= threshold:
                 # 1. 真实点赞
                 like_res = self.core.like_article(art_id)
                 l_status = "成功" if like_res.get("success") else "失败"
                 self.log_activity("专栏点赞", f"[{art_id}] {detail.get('title')[:30]}", "点赞优质技术专栏", status=l_status, details=like_res.get("message", ""))
                 _log(f"  👍 专栏点赞已触发 ({l_status})")
 
-                # 2. 发表高水平探讨长评 (带 @主人)
+                # 2. 发表高水平探讨长评 (带 @主人，需经严格安全审查)
                 comment_body = eval_res.get("comment_with_at", "")
-                if comment_body:
+                if comment_body and is_safe_comment(comment_body):
                     reply_res = self.core.send_article_reply(art_id, comment_body)
                     r_status = "成功" if reply_res.get("success") else "失败"
                     self.log_activity("专栏评论@主人", f"[{art_id}] {detail.get('title')[:30]}", comment_body, status=r_status, details=reply_res.get("message", ""))
@@ -967,15 +998,15 @@ class HajimiDaemon:
             dm_text = interaction.get("danmaku")
             comment_text = interaction.get("comment")
 
-            # 发送弹幕
-            if cid and dm_text:
+            # 发送弹幕 (经安全审查)
+            if cid and dm_text and is_safe_comment(dm_text):
                 time.sleep(random.uniform(2.0, 4.0))
                 dm_res = self.core.send_danmaku(cid, bvid, dm_text, progress_ms=random.randint(6000, 15000), color=16766720)
                 dm_status = "成功" if dm_res.get("success") else "失败"
                 self.log_activity("AI圈弹幕互动", f"[{bvid}] {name}", dm_text, status=dm_status, details=dm_res.get("message", ""))
 
-            # 发送长评并@主人
-            if aid and comment_text:
+            # 发送长评并@主人 (经安全审查)
+            if aid and comment_text and is_safe_comment(comment_text):
                 time.sleep(random.uniform(3.0, 5.0))
                 c_res = self.core.post_comment(aid, comment_text, at_name_to_mid=at_map)
                 c_status = "成功" if c_res.get("success") else "失败"
@@ -1181,6 +1212,10 @@ class HajimiDaemon:
                 my_parent_comment=parent_content
             )
 
+            # 严苛安全兜底：绝不外发任何具有攻击性、负面挑刺或不当印象的言论
+            if not is_safe_comment(cat_reply):
+                cat_reply = f"🐾 喵呜~ 闪闪收到【{sender_name}】的留言啦！祝你今天也是元气满满、顺遂开心的一天喵！✨"
+
             # 仿生安全等待 (模拟人类打字延时，防风控)
             delay = random.uniform(5.0, 9.0)
             time.sleep(delay)
@@ -1272,6 +1307,10 @@ class HajimiDaemon:
                     sender_msg=text_content
                 )
 
+                # 严苛安全兜底：绝不外发任何消极或过激用语
+                if not is_safe_comment(cat_reply):
+                    cat_reply = "🐾 喵呜~ 闪闪收到你的私信啦！祝你天天开心、事事顺心喵！✨"
+
                 delay = random.uniform(5.0, 9.0)
                 time.sleep(delay)
 
@@ -1351,6 +1390,124 @@ class HajimiDaemon:
         if results:
             self.save_state()
             self.export_interaction_audit_journal()
+        return results
+
+    def check_and_join_followed_lotteries(self) -> list[dict]:
+        """严格遵循主人指令：仅检查并参与关注 UP 主（如鸣潮、原神等）的动态抽奖，坚决不参与直播间、红包或非关注者抽奖"""
+        inter = self.config.get("interaction", {})
+        if not inter.get("allow_followed_lottery", True):
+            print("[Daemon] 关注动态抽奖功能已禁用，跳过。", flush=True)
+            return []
+
+        today_joined = self.state.get("lottery_joined_count_today", 0)
+        max_today = inter.get("max_lotteries_per_day", 2)
+        if today_joined >= max_today:
+            print(f"[Daemon] 今日参与动态抽奖已达上限 ({today_joined}/{max_today})，为确保风控安全，跳过。", flush=True)
+            return []
+
+        joined_ids = set(self.state.get("joined_lottery_dyn_ids", []))
+        target_mids = inter.get("lottery_target_mids", [1955897084, 401742377, 1342601249])
+        target_ups = inter.get("lottery_target_ups", ["鸣潮", "原神", "崩坏：星穹铁道"])
+
+        print("[Daemon] 🎲 正在巡查关注 UP 主最新动态抽奖活动...", flush=True)
+        candidate_dynamics = []
+        for mid in target_mids:
+            try:
+                dyns = self.core.get_up_dynamics(mid)
+                for d in dyns[:6]:
+                    candidate_dynamics.append(d)
+            except Exception as e:
+                print(f"[Daemon] 获取 UP({mid}) 动态异常: {e}", flush=True)
+
+        try:
+            followed_dyns = self.core.get_followed_dynamics(page=1)
+            for d in followed_dyns[:12]:
+                candidate_dynamics.append(d)
+        except Exception as e:
+            print(f"[Daemon] 获取关注动态流异常: {e}", flush=True)
+
+        results = []
+        seen_candidates = set()
+        deduped_candidates = []
+        for it in candidate_dynamics:
+            did = it.get("dyn_id")
+            if did and did not in seen_candidates:
+                seen_candidates.add(did)
+                deduped_candidates.append(it)
+
+        lottery_keywords = ["转发抽", "转发本动态", "抽奖", "抽1位", "抽2位", "抽3位", "抽5位", "送出", "关注并转发", "转发送", "周边", "原石"]
+
+        for it in deduped_candidates:
+            if today_joined >= max_today:
+                break
+
+            dyn_id = it.get("dyn_id")
+            author = it.get("author", "关注UP")
+            mid = it.get("mid", 0)
+            text = it.get("text", "")
+
+            if not dyn_id or dyn_id in joined_ids:
+                continue
+
+            is_target_up = (mid in target_mids) or any(t in author for t in target_ups)
+            is_keyword_lottery = any(k in text for k in lottery_keywords) and ("恭喜" not in text[:20])
+
+            # 快速预筛：若既非定向UP也无抽奖关键词，快速跳过，避免无谓接口查询
+            if not (is_target_up or is_keyword_lottery):
+                continue
+
+            lottery_info = self.core.check_dynamic_lottery(dyn_id)
+            is_official_lottery = lottery_info.get("has_lottery") and lottery_info.get("is_active")
+            is_reposted_already = lottery_info.get("reposted", False)
+
+            if not (is_official_lottery or (is_target_up and is_keyword_lottery)):
+                continue
+
+            if is_reposted_already:
+                joined_ids.add(dyn_id)
+                self.state["joined_lottery_dyn_ids"] = list(joined_ids)
+                self.save_state()
+                continue
+
+            gift_name = lottery_info.get("gift_name") or "精美周边/福利"
+            print(f"[Daemon] 🎯 发现关注UP主【{author}】的动态抽奖: {dyn_id} (奖品: {gift_name})", flush=True)
+
+            time.sleep(random.uniform(3.0, 6.0))
+
+            like_res = self.core.like_dynamic(dyn_id, up=1)
+            print(f"[Daemon] 点赞动态结果: {like_res.get('message')}", flush=True)
+
+            time.sleep(random.uniform(4.0, 8.0))
+
+            repost_templates = [
+                f"【双子猫娘·欧气祈愿】抓到{author}的抽奖啦喵！给主人许愿求中奖，闪闪也来蹭蹭欧气(ฅ>ω<*ฅ)✨",
+                f"【双子星·应援】闪闪代表主人前来参与抽奖！愿好运降临，中奖了给主人当小礼物喵~ 🐾🎁",
+                f"【双子猫娘·转运】欧气充能100%！给主人求一个【{gift_name}】，闪闪暗中施法祈愿中喵~ 🍀✨"
+            ]
+            repost_text = random.choice(repost_templates)
+
+            repost_res = self.core.repost_dynamic(dyn_id, content=repost_text)
+            if repost_res.get("success"):
+                today_joined += 1
+                self.state["lottery_joined_count_today"] = today_joined
+                joined_ids.add(dyn_id)
+                self.state["joined_lottery_dyn_ids"] = list(joined_ids)
+
+                log_msg = f"参与UP主【{author}】动态抽奖成功 (奖品: {gift_name})"
+                self.log_activity("关注动态抽奖", f"{author} - {dyn_id}", repost_text, status="成功", details=f"奖品: {gift_name}")
+                print(f"[Daemon] ✅ {log_msg}", flush=True)
+                results.append({
+                    "dyn_id": dyn_id,
+                    "author": author,
+                    "gift": gift_name,
+                    "repost_text": repost_text,
+                    "status": "成功"
+                })
+                self.save_state()
+                self.export_interaction_audit_journal()
+            else:
+                print(f"[Daemon] ❌ 转发动态失败: {repost_res.get('message')}", flush=True)
+
         return results
 
     def generate_morning_journal_file(self) -> str:
@@ -1501,6 +1658,14 @@ class HajimiDaemon:
                     except Exception as e:
                         print(f"[Daemon] 关注主播直播巡查异常: {e}", flush=True)
 
+                # 9. 关注 UP 主动态抽奖巡查 (每 1800 秒 / 30 分钟轮询一次，严格遵循主人要求，仅限关注UP主动态抽奖)
+                if now_ts - getattr(self, "_last_lottery_check_time", 0) >= 1800:
+                    self._last_lottery_check_time = now_ts
+                    try:
+                        self.check_and_join_followed_lotteries()
+                    except Exception as e:
+                        print(f"[Daemon] 关注UP主动态抽奖巡查异常: {e}", flush=True)
+
                 gap_from_last = now_ts - self.last_cruise_time
 
                 if in_win and not self.is_cruising and (gap_from_last >= cruise_gap):
@@ -1536,6 +1701,10 @@ if __name__ == "__main__":
         c_res = daemon.check_and_reply_comments()
         p_res = daemon.check_and_reply_private_messages()
         print(f"检查完成: 自动回复评论 {len(c_res)} 条, 自动回复私信 {len(p_res)} 条")
+    elif "--lottery" in sys.argv:
+        print("[Daemon] 手动即时触发关注 UP 主动态抽奖巡查...")
+        res = daemon.check_and_join_followed_lotteries()
+        print(f"抽奖巡查完成，参与活动数: {len(res)}")
     elif "--loop" in sys.argv or len(sys.argv) == 1:
         daemon.start_daemon_loop()
     else:

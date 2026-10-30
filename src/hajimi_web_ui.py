@@ -117,6 +117,8 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 "evening_done": daemon_instance.state.get("evening_journal_done", False),
                 "articles_count": len(daemon_instance.state.get("recent_articles", [])),
                 "live_count": len(daemon_instance.state.get("live_inspections", [])),
+                "lottery_count_today": daemon_instance.state.get("lottery_joined_count_today", 0),
+                "joined_lotteries_total": len(daemon_instance.state.get("joined_lottery_dyn_ids", [])),
                 "recent_articles": daemon_instance.state.get("recent_articles", [])[:50],
                 "live_inspections": daemon_instance.state.get("live_inspections", [])[:30],
                 "recent": daemon_instance.state.get("recent_evaluations", [])[:80],
@@ -363,6 +365,17 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             t = threading.Thread(target=_peers, daemon=True)
             t.start()
             self._send_json({"success": True, "message": "已在后台启动向 AI 运营同行（大肥鱼、鲸鱼娘等）交流研学！"})
+
+        elif path == "/api/check_lottery":
+            def _lottery():
+                try:
+                    res = daemon_instance.check_and_join_followed_lotteries()
+                    print(f"[WebUI] 关注动态抽奖巡查完成: 参与 {len(res)} 场活动")
+                except Exception as e:
+                    print(f"[WebUI] 关注动态抽奖巡查异常: {e}")
+            t = threading.Thread(target=_lottery, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": "已在后台启动关注 UP 主动态抽奖巡查与参与任务！"})
 
         elif path == "/api/morning_journal":
             path_file = daemon_instance.generate_morning_journal_file()
@@ -877,6 +890,10 @@ def get_dashboard_html() -> str:
         <span id="statTreasures" class="stat-val" style="color:#059669;">0</span>
       </div>
       <div class="stat-pill">
+        <span class="stat-label">关注动态抽奖</span>
+        <span id="statLottery" class="stat-val" style="color:#d97706;">0 次</span>
+      </div>
+      <div class="stat-pill">
         <span class="stat-label">今日互动与 @ 次数</span>
         <span id="statInteractions" class="stat-val" style="color:#4f46e5;">0</span>
       </div>
@@ -910,6 +927,7 @@ def get_dashboard_html() -> str:
           <button class="btn-action" style="background:#ec4899; color:#fff;" onclick="triggerBoostMaster()">⭐ 一键应援主人作品</button>
           <button class="btn-action" style="background:#0284c7; color:#fff;" onclick="switchTab('tab-articles')">📰 研读专栏</button>
           <button class="btn-action" style="background:#d97706; color:#fff;" onclick="switchTab('tab-live')">📺 巡查直播</button>
+          <button class="btn-action" style="background:#10b981; color:#fff;" onclick="triggerLotteryCheck()">🎯 检查关注UP抽奖</button>
           <button class="btn-action" style="background:#8b5cf6; color:#fff;" onclick="triggerInteractPeers()">🤝 AI运营同行研学互动</button>
           <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪出击巡航</button>
         </div>
@@ -1171,6 +1189,9 @@ def get_dashboard_html() -> str:
       // 顶部指标
       document.getElementById('statWatched').innerText = data.watched_count || (data.recent ? data.recent.length : 0);
       document.getElementById('statTreasures').innerText = data.treasures_count || 0;
+      if (document.getElementById('statLottery')) {
+        document.getElementById('statLottery').innerText = (data.lottery_count_today || 0) + ' 次';
+      }
       document.getElementById('statInteractions').innerText = (data.activity_logs ? data.activity_logs.length : 0) + ' 笔操作';
       document.getElementById('statStamina').innerText = `${Math.round(data.stamina || 100)} / 100`;
 
@@ -1467,6 +1488,18 @@ def get_dashboard_html() -> str:
       const data = await res.json();
       showToast(data.message);
       setTimeout(loadStatus, 2000);
+    } catch(e) {
+      showToast('调用失败: ' + e);
+    }
+  }
+
+  async function triggerLotteryCheck() {
+    showToast('🎲 正在巡查关注 UP 主动态抽奖活动...');
+    try {
+      const res = await fetch('/api/check_lottery', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+      setTimeout(loadStatus, 3000);
     } catch(e) {
       showToast('调用失败: ' + e);
     }

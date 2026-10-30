@@ -190,7 +190,19 @@
     "like_score_threshold": 8.0,
     "max_likes_per_day": 15,
     "fav_score_threshold": 9.0,
-    "max_favs_per_day": 5
+    "max_favs_per_day": 5,
+    "allow_followed_lottery": true,
+    "max_lotteries_per_day": 2,
+    "lottery_target_ups": [
+      "鸣潮",
+      "原神",
+      "崩坏：星穹铁道"
+    ],
+    "lottery_target_mids": [
+      1955897084,
+      401742377,
+      1342601249
+    ]
   },
   "risk_control": {
     "min_request_interval_ms": 3500,

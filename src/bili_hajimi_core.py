@@ -152,7 +152,7 @@ class BiliHajimiCore:
                 cookies.append(f"{cookie_key}={val}")
         return "; ".join(cookies)
 
-    def _request(self, url: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None) -> dict:
+    def _request(self, url: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None, json_data: dict = None, fast: bool = False) -> dict:
         if params:
             query = urllib.parse.urlencode(params)
             url = f"{url}?{query}" if "?" not in url else f"{url}&{query}"
@@ -170,7 +170,10 @@ class BiliHajimiCore:
             all_headers.update(headers)
 
         body_bytes = None
-        if data is not None:
+        if json_data is not None:
+            body_bytes = json.dumps(json_data, ensure_ascii=False).encode("utf-8")
+            all_headers["Content-Type"] = "application/json; charset=utf-8"
+        elif data is not None:
             body_bytes = urllib.parse.urlencode(data).encode("utf-8")
             all_headers["Content-Type"] = "application/x-www-form-urlencoded"
 
@@ -180,9 +183,12 @@ class BiliHajimiCore:
         backoff = 2.0
         for attempt in range(retries):
             try:
-                min_wait = self.config.get("risk_control", {}).get("min_request_interval_ms", 2000) / 1000.0
-                max_wait = self.config.get("risk_control", {}).get("max_request_interval_ms", 4000) / 1000.0
-                time.sleep(random.uniform(min_wait, max_wait))
+                if fast:
+                    time.sleep(random.uniform(0.25, 0.5))
+                else:
+                    min_wait = self.config.get("risk_control", {}).get("min_request_interval_ms", 2000) / 1000.0
+                    max_wait = self.config.get("risk_control", {}).get("max_request_interval_ms", 4000) / 1000.0
+                    time.sleep(random.uniform(min_wait, max_wait))
 
                 with urllib.request.urlopen(req, timeout=12) as response:
                     raw = response.read().decode("utf-8", errors="replace")
@@ -384,6 +390,8 @@ class BiliHajimiCore:
         resp = self._request(url, params={"bvid": bvid})
         if resp.get("code") == 0:
             data = resp.get("data", {})
+            raw_pages = data.get("pages", [])
+            ugc_season = data.get("ugc_season", {})
             return {
                 "bvid": bvid,
                 "aid": data.get("aid", 0),
@@ -396,6 +404,20 @@ class BiliHajimiCore:
                 "stat": data.get("stat", {}),
                 "pic": data.get("pic", ""),
                 "tname": data.get("tname", ""),
+                "videos": data.get("videos", len(raw_pages)),
+                "pages_count": len(raw_pages),
+                "pages": [
+                    {
+                        "page": p.get("page"),
+                        "part": p.get("part", ""),
+                        "duration": p.get("duration", 0),
+                        "cid": p.get("cid")
+                    } for p in raw_pages[:50]
+                ],
+                "ugc_season": {
+                    "title": ugc_season.get("title", ""),
+                    "ep_count": ugc_season.get("ep_count", 0)
+                } if ugc_season else {}
             }
         return {}
 
@@ -1175,6 +1197,177 @@ class BiliHajimiCore:
         except Exception as e:
             return {"success": False, "message": f"发布动态异常: {e}"}
 
+    # ==========================================
+    # 动态互动与抽奖模块 (Dynamic Interaction & Lottery)
+    # ==========================================
+    def like_dynamic(self, dyn_id: str, up: int = 1) -> dict:
+        """给指定 B 站动态点赞/取消点赞 (up=1 点赞, up=2 取消点赞)"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+        url = f"https://api.bilibili.com/x/dynamic/feed/dyn/thumb?csrf={csrf}"
+        headers = {
+            "Origin": "https://t.bilibili.com",
+            "Referer": f"https://t.bilibili.com/{dyn_id}"
+        }
+        payload = {"dyn_id_str": str(dyn_id), "up": up}
+        resp = self._request(url, method="POST", json_data=payload, headers=headers)
+        if resp.get("code") == 0:
+            return {"success": True, "message": "点赞动态成功" if up == 1 else "取消点赞成功", "data": resp.get("data")}
+        return {"success": False, "message": resp.get("message", "点赞操作失败"), "code": resp.get("code")}
+
+    def repost_dynamic(self, orig_dyn_id: str, content: str = "") -> dict:
+        """转发指定动态 (带转发评语/附言，用于关注UP主动态抽奖应援)"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+        url = f"https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf={csrf}"
+        headers = {
+            "Origin": "https://t.bilibili.com",
+            "Referer": f"https://t.bilibili.com/{orig_dyn_id}"
+        }
+        payload = {
+            "dyn_req": {
+                "content": {
+                    "contents": [
+                        {
+                            "raw_text": content or "转发动态",
+                            "type": 1,
+                            "biz_id": ""
+                        }
+                    ]
+                },
+                "scene": 4,
+                "pics": [],
+                "attach_card": None
+            },
+            "web_repost_src": {
+                "dyn_id_str": str(orig_dyn_id)
+            }
+        }
+        resp = self._request(url, method="POST", json_data=payload, headers=headers)
+        if resp.get("code") == 0:
+            dyn_data = resp.get("data", {})
+            return {
+                "success": True,
+                "message": "转发动态成功！",
+                "dyn_id": dyn_data.get("dyn_id_str") or dyn_data.get("dyn_id"),
+                "data": dyn_data
+            }
+        return {"success": False, "message": resp.get("message", "转发动态失败"), "code": resp.get("code")}
+
+    def get_followed_dynamics(self, page: int = 1, page_type: str = "all") -> list[dict]:
+        """获取关注 UP 主的最新综合动态列表 (用于动态发现与抽奖监控)"""
+        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all"
+        params = {"type": page_type, "page": page}
+        resp = self._request(url, params=params)
+        if resp.get("code") == 0:
+            items = resp.get("data", {}).get("items", [])
+            results = []
+            for it in items:
+                dyn_id = it.get("id_str")
+                author_info = it.get("modules", {}).get("module_author") or {}
+                author = author_info.get("name", "")
+                mid = author_info.get("mid", 0)
+                desc_obj = (it.get("modules", {}).get("module_dynamic") or {}).get("desc") or {}
+                text = desc_obj.get("text", "") if isinstance(desc_obj, dict) else ""
+                dyn_type = it.get("type", "")
+                results.append({
+                    "dyn_id": dyn_id,
+                    "type": dyn_type,
+                    "author": author,
+                    "mid": mid,
+                    "text": text,
+                    "raw_item": it
+                })
+            return results
+        return []
+
+    def get_up_dynamics(self, mid: int) -> list[dict]:
+        """获取指定 UP 主的个人最新动态 (如鸣潮、原神等官方账号)"""
+        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
+        params = {"host_mid": mid}
+        resp = self._request(url, params=params)
+        if resp.get("code") == 0:
+            items = resp.get("data", {}).get("items", [])
+            results = []
+            for it in items:
+                dyn_id = it.get("id_str")
+                author_info = it.get("modules", {}).get("module_author") or {}
+                author = author_info.get("name", "")
+                desc_obj = (it.get("modules", {}).get("module_dynamic") or {}).get("desc") or {}
+                text = desc_obj.get("text", "") if isinstance(desc_obj, dict) else ""
+                dyn_type = it.get("type", "")
+                results.append({
+                    "dyn_id": dyn_id,
+                    "type": dyn_type,
+                    "author": author,
+                    "mid": mid,
+                    "text": text,
+                    "raw_item": it
+                })
+            return results
+        return []
+
+    def check_dynamic_lottery(self, dyn_id: str) -> dict:
+        """查询动态是否挂载官方抽奖及抽奖实时状态"""
+        url = f"https://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_id={dyn_id}&business_type=1"
+        resp = self._request(url, fast=True)
+        if resp.get("code") == 0:
+            d = resp.get("data") or {}
+            status = d.get("status", -1)  # 0: 进行中, 2: 已开奖
+            return {
+                "has_lottery": True,
+                "is_active": (status == 0),
+                "status": status,
+                "gift_name": d.get("first_prize_cmt") or d.get("gift_name", "未知奖品"),
+                "participated": bool(d.get("participated")),
+                "reposted": bool(d.get("reposted")),
+                "followed": bool(d.get("followed")),
+                "need_post": bool(d.get("need_post", 1)),
+                "lottery_time": d.get("lottery_time", 0),
+                "lottery_id": d.get("lottery_id"),
+                "raw": d
+            }
+        return {
+            "has_lottery": False,
+            "is_active": False,
+            "status": -1,
+            "gift_name": "",
+            "participated": False,
+            "reposted": False,
+            "followed": False,
+            "need_post": False
+        }
+
+
+    def forward_dynamic(self, dynamic_id: str, content: str = "转发动态~") -> dict:
+        """转发指定动态 (支持动态互动、养号与参与转发抽奖)"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf"}
+        url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/create/repost?csrf={csrf}"
+        payload = {
+            "dyn_req": {
+                "content": {"contents": [{"raw_text": content, "type": 1}]},
+                "scene": 4,
+                "attach_card": None
+            },
+            "web_repost_src": {"dyn_id_str": str(dynamic_id)}
+        }
+        resp = self._request(url, method="POST", json_data=payload, headers={"Referer": "https://t.bilibili.com/"})
+        if resp.get("code") == 0:
+            return {"success": True, "message": "动态转发成功！", "data": resp.get("data")}
+        legacy_url = "https://api.vc.bilibili.com/dynamic_repost/v1/dynamic_repost/repost"
+        legacy_data = {
+            "uid": self.config.get("auth", {}).get("dedeuserid", ""),
+            "dynamic_id": str(dynamic_id),
+            "content": content,
+            "csrf": csrf,
+            "csrf_token": csrf
+        }
+        res = self._request(legacy_url, method="POST", data=legacy_data, headers={"Referer": "https://t.bilibili.com/"})
+        return {"success": res.get("code") == 0, "message": res.get("message", "转发完成"), "code": res.get("code")}
 
     # ==========================================
     # 专栏文章 (Articles / Columns) 模块
