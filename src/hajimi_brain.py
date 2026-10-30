@@ -174,7 +174,7 @@ class HajimiBrain:
         bvid = video_data.get("bvid", "")
 
         master_name = self.config.get("profile", {}).get("master_name", "主人")
-        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 8.0)
+        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 6.0)
 
         # 智能分类判断
         category = self.detect_category(video_data)
@@ -318,7 +318,12 @@ class HajimiBrain:
 ---
 【主人信息】
 称呼主人为: {master_name}
-触发在评论区 @主人的分数阈值: {at_threshold} 分
+触发在评论区 @主人的分数阈值: {at_threshold} 分 (基准线为 6.0 分，及格良好即可积极互动)
+
+【互动与文明准则（绝不使用暴力词汇）】
+1. 默认及格良作线为 6.0 分，8.0分以上为宝藏神作。6.0分及以上的视频请积极发掘看点与亮点，友好互动交流；
+2. 即使对 6.0分以下表现稍微一般的视频，若参与互动也必须保持温和客气、就事论事或猫娘卖萌打卡，【绝对严禁出现任何暴力、攻击性、贬低性或劝退词汇】（绝不提垃圾、画大饼、水课、快跑等负面词）！
+3. 积极参与高赞热评讨论：若下方热评有探讨价值，请在 discussion_reply 中给出文明风趣、富有见地或暖心的跟帖回复。
 
 【待质检视频全维度情报】
 - 标题: {title}
@@ -411,7 +416,7 @@ class HajimiBrain:
         like = stat.get("like", 0)
 
         master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
-        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 8.0)
+        at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 6.0)
 
         # 专栏文章篇幅适配（最多支持 10000 字）
         if len(content) <= 10000:
@@ -429,7 +434,12 @@ class HajimiBrain:
 ---
 【主人信息】
 称呼主人为: {master_name}
-触发在评论区 @主人的分数阈值: {at_threshold} 分
+触发在评论区 @主人的分数阈值: {at_threshold} 分 (基准线为 6.0 分，及格良好即可积极互动)
+
+【互动与文明准则（绝不使用暴力词汇）】
+1. 默认及格良作线为 6.0 分，8.0分以上为宝藏神作。6.0分及以上的视频请积极发掘看点与亮点，友好互动交流；
+2. 即使对 6.0分以下表现稍微一般的视频，若参与互动也必须保持温和客气、就事论事或猫娘卖萌打卡，【绝对严禁出现任何暴力、攻击性、贬低性或劝退词汇】（绝不提垃圾、画大饼、水课、快跑等负面词）！
+3. 积极参与高赞热评讨论：若下方热评有探讨价值，请在 discussion_reply 中给出文明风趣、富有见地或暖心的跟帖回复。
 
 【研读任务】
 你正在研读一篇 B 站技术专栏/长文，请以傲娇但极度博学、专业深邃的赛博猫娘（Gemini 3.8 Flash）视角进行全方位质检与深度技术评析。
