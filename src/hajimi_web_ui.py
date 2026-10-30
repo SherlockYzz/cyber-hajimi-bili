@@ -26,7 +26,14 @@ except ImportError:
         daemon_threads = True
 
 try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    else:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    else:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
@@ -47,6 +54,158 @@ PORT = int(os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT", 8765))
 daemon_instance = HajimiDaemon(CONFIG_PATH)
 is_cruising = False
 cruise_logs_buffer = []
+
+# AstrBot 主动消息限制与会话路径定义
+ASTRBOT_DATA_DIR = Path.home() / ".astrbot" / "data"
+ASTRBOT_PROACTIVE_DATA_DIR = ASTRBOT_DATA_DIR / "plugin_data" / "astrbot_plugin_proactive_chat"
+ASTRBOT_SESSION_DATA_PATH = ASTRBOT_PROACTIVE_DATA_DIR / "session_data.json"
+ASTRBOT_OVERRIDES_PATH = ASTRBOT_PROACTIVE_DATA_DIR / "session_overrides.json"
+ASTRBOT_CONFIG_PATH = ASTRBOT_DATA_DIR / "config" / "astrbot_plugin_proactive_chat_config.json"
+
+
+def get_astrbot_proactive_status() -> dict:
+    from datetime import datetime
+    if not ASTRBOT_SESSION_DATA_PATH.exists():
+        return {
+            "installed": False,
+            "message": "未检测到 AstrBot 主动消息插件持久化数据 (session_data.json)",
+            "sessions": [],
+            "total_sessions": 0,
+            "limited_sessions": 0,
+            "max_unanswered": 4,
+            "astrbot_running": False,
+        }
+
+    try:
+        with open(ASTRBOT_SESSION_DATA_PATH, "r", encoding="utf-8") as f:
+            session_data = json.load(f)
+    except Exception:
+        session_data = {}
+
+    overrides = {}
+    if ASTRBOT_OVERRIDES_PATH.exists():
+        try:
+            with open(ASTRBOT_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+                overrides = json.load(f)
+        except Exception:
+            overrides = {}
+
+    max_unanswered = 4
+    if ASTRBOT_CONFIG_PATH.exists():
+        try:
+            with open(ASTRBOT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                max_unanswered = cfg.get("friend_settings", {}).get("schedule_settings", {}).get("max_unanswered_times", 4)
+        except Exception:
+            pass
+
+    sessions_list = []
+    limited_count = 0
+
+    for sid, info in session_data.items():
+        if not isinstance(info, dict):
+            continue
+        unanswered = info.get("unanswered_count", 0)
+        is_limited = (unanswered >= max_unanswered) if max_unanswered > 0 else False
+        if is_limited:
+            limited_count += 1
+
+        override_item = overrides.get(sid, {})
+        custom_name = override_item.get("session_name", "")
+        if not custom_name:
+            if "weixin" in sid.lower():
+                tail = sid.split(":")[-1]
+                custom_name = f"微信私聊 ({tail[:10]}...)" if len(tail) > 10 else f"微信私聊 ({tail})"
+            elif "GroupMessage" in sid:
+                tail = sid.split(":")[-1]
+                custom_name = f"QQ群聊 ({tail[:8]})"
+            else:
+                tail = sid.split(":")[-1]
+                custom_name = f"QQ私聊 ({tail[:8]}...)" if len(tail) > 8 else f"QQ私聊 ({tail})"
+
+        last_time = info.get("last_message_time", 0)
+        time_str = "无记录"
+        if last_time > 0:
+            try:
+                time_str = datetime.fromtimestamp(last_time).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                time_str = str(last_time)
+
+        sessions_list.append({
+            "session_id": sid,
+            "name": custom_name,
+            "self_id": info.get("self_id", "default"),
+            "unanswered_count": unanswered,
+            "max_unanswered": max_unanswered,
+            "is_limited": is_limited,
+            "last_message_time": time_str,
+        })
+
+    astrbot_running = False
+    try:
+        import subprocess
+        out = subprocess.check_output('tasklist /FI "IMAGENAME eq AstrBot.exe" /NH', shell=True).decode("gbk", errors="ignore")
+        astrbot_running = "AstrBot.exe" in out
+    except Exception:
+        pass
+
+    return {
+        "installed": True,
+        "sessions": sessions_list,
+        "total_sessions": len(sessions_list),
+        "limited_sessions": limited_count,
+        "max_unanswered": max_unanswered,
+        "astrbot_running": astrbot_running,
+    }
+
+
+def reset_astrbot_proactive_limits(target_session_id: str | None = None) -> dict:
+    if not ASTRBOT_SESSION_DATA_PATH.exists():
+        return {"success": False, "message": "未找到 AstrBot session_data.json 数据文件"}
+
+    try:
+        with open(ASTRBOT_SESSION_DATA_PATH, "r", encoding="utf-8") as f:
+            session_data = json.load(f)
+    except Exception as e:
+        return {"success": False, "message": f"读取 session_data.json 失败: {e}"}
+
+    reset_count = 0
+    for sid, info in session_data.items():
+        if not isinstance(info, dict):
+            continue
+        if target_session_id and sid != target_session_id:
+            continue
+        info["unanswered_count"] = 0
+        reset_count += 1
+
+    try:
+        with open(ASTRBOT_SESSION_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(session_data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        return {"success": False, "message": f"持久化写入 session_data.json 失败: {e}"}
+
+    api_synced = False
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://127.0.0.1:4100/api/jobs/reset-all-unanswered", data=b"{}", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=0.6) as resp:
+            if resp.status == 200:
+                api_synced = True
+    except Exception:
+        pass
+
+    msg = f"已成功将 {reset_count} 个会话的主动消息未回复计数清零！"
+    if api_synced:
+        msg += " (已同步通知 AstrBot 内存即时生效)"
+    else:
+        msg += " (已持久化存盘)"
+
+    return {
+        "success": True,
+        "message": msg,
+        "reset_count": reset_count,
+        "api_synced": api_synced,
+    }
 
 
 class HajimiHandler(BaseHTTPRequestHandler):
@@ -204,6 +363,8 @@ class HajimiHandler(BaseHTTPRequestHandler):
                     pass
             else:
                 self.send_error(404)
+        elif path == "/api/astrbot_status":
+            self._send_json(get_astrbot_proactive_status())
         else:
             self.send_error(404)
 
@@ -301,6 +462,11 @@ class HajimiHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True})
             except Exception as e:
                 self._send_json({"success": False, "message": str(e)})
+
+        elif path == "/api/astrbot_reset_limit":
+            target_sid = payload.get("session_id")
+            result = reset_astrbot_proactive_limits(target_sid)
+            self._send_json(result)
 
         else:
             self.send_error(404)
@@ -764,6 +930,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <span class="nav-icon">🚀</span>
         <span>巡航与即时召唤</span>
       </li>
+      <li class="nav-item" onclick="switchTab('tab-astrbot')">
+        <span class="nav-icon">🤖</span>
+        <span>AstrBot主动消息</span>
+      </li>
     </ul>
     <div class="sidebar-footer">
       <div>引擎: Gemini 3.8 Flash</div>
@@ -927,6 +1097,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      <div class="section-block">
+        <div class="section-title">AstrBot 机器人主动消息限制联动</div>
+        <p class="form-hint" style="margin-bottom: 14px;">已连接本机 AstrBot 主动消息会话数据。当主动发言未回复次数达到上限时将触发防打扰限制，可随时在此一键解除限制并恢复发言。</p>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <button class="btn-save-light" onclick="resetAstrBotLimits()">✨ 立即全部清零限制</button>
+          <button class="btn-save-light" onclick="switchTab('tab-astrbot')">⚙️ 查看会话详情与管理</button>
+        </div>
+      </div>
     </div>
 
     <!-- Tab 3: 闪闪立绘衣橱 -->
@@ -975,6 +1154,50 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div id="consoleLog" class="console-box">等待召唤中... 点击右上角“立即派闪闪巡航”开启。</div>
     </div>
 
+    <!-- Tab 6: AstrBot 主动消息限制管理 -->
+    <div id="tab-astrbot" class="tab-view">
+      <div class="view-header">
+        <div class="title-block">
+          <h1>AstrBot 主动消息限制管理</h1>
+          <p class="desc">实时监控与重置 AstrBot 机器人的私聊/群聊主动消息未回复计数（防打扰限制）。当连续未回复次数达上限时（当前默认 4 次），主动消息会自动暂停；点击清零即可立即解除熔断并恢复主动发信。</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-action-top" onclick="loadAstrBotStatus()" style="background:#f3f4f6; color:#374151; border:1px solid #d1d5db;">🔄 刷新数据</button>
+          <button class="btn-action-top" onclick="resetAstrBotLimits()" style="background:#111827; color:#ffffff;">✨ 一键全部清零</button>
+        </div>
+      </div>
+
+      <!-- 概览指标行 -->
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:14px; margin-bottom:20px;">
+        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">AstrBot 进程状态</div>
+          <div id="astrbotProcessStatus" style="font-size:18px; font-weight:700; color:#10b981; display:flex; align-items:center; gap:6px;">
+            <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#10b981;"></span> 检测中...
+          </div>
+        </div>
+        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">监控会话总数</div>
+          <div id="astrbotTotalSessions" style="font-size:20px; font-weight:700; color:var(--text-main);">0</div>
+        </div>
+        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">限制触发状态</div>
+          <div id="astrbotLimitedSessions" style="font-size:18px; font-weight:700; color:#10b981;">0 个受限</div>
+        </div>
+        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">未回复暂停阈值</div>
+          <div id="astrbotMaxUnanswered" style="font-size:20px; font-weight:700; color:var(--text-main);">4 次</div>
+        </div>
+      </div>
+
+      <!-- 会话卡片列表 -->
+      <div class="section-block" style="border-top:none; margin-top:0; padding-top:0;">
+        <div class="section-title" style="margin-bottom:12px;">会话主动消息计数清单</div>
+        <div id="astrbotSessionsList" style="display:flex; flex-direction:column; gap:10px;">
+          <div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">正在加载 AstrBot 会话数据...</div>
+        </div>
+      </div>
+    </div>
+
   </main>
 </div>
 
@@ -1003,12 +1226,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     else if (tabId === 'tab-wardrobe') items[2].classList.add('active');
     else if (tabId === 'tab-journals') items[3].classList.add('active');
     else if (tabId === 'tab-cruise') items[4].classList.add('active');
+    else if (tabId === 'tab-astrbot') items[5].classList.add('active');
 
     const target = document.getElementById(tabId);
     if (target) target.classList.add('active');
 
     if (tabId === 'tab-wardrobe') loadGallery();
     if (tabId === 'tab-journals') loadJournals();
+    if (tabId === 'tab-astrbot') loadAstrBotStatus();
   }
 
   // 计算字符与字节
@@ -1291,10 +1516,105 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }, 2000);
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  async function loadAstrBotStatus() {
+    try {
+      const res = await fetch('/api/astrbot_status');
+      const data = await res.json();
+      if (!data.installed) {
+        document.getElementById('astrbotSessionsList').innerHTML = `<div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">${data.message}</div>`;
+        return;
+      }
+      document.getElementById('astrbotTotalSessions').textContent = data.total_sessions;
+      document.getElementById('astrbotMaxUnanswered').textContent = data.max_unanswered + ' 次';
+
+      const limitedEl = document.getElementById('astrbotLimitedSessions');
+      if (data.limited_sessions > 0) {
+        limitedEl.innerHTML = `<span style="color:#ef4444;">${data.limited_sessions} 个已暂停</span>`;
+      } else {
+        limitedEl.innerHTML = `<span style="color:#10b981;">全部畅聊中 (0 受限)</span>`;
+      }
+
+      const procEl = document.getElementById('astrbotProcessStatus');
+      if (data.astrbot_running) {
+        procEl.innerHTML = `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#10b981;"></span> 运行中`;
+      } else {
+        procEl.innerHTML = `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af;"></span> 离线 / 待启动`;
+      }
+
+      const container = document.getElementById('astrbotSessionsList');
+      if (!data.sessions || data.sessions.length === 0) {
+        container.innerHTML = `<div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">暂无会话数据</div>`;
+        return;
+      }
+
+      container.innerHTML = data.sessions.map(s => {
+        const isLimited = s.is_limited;
+        const count = s.unanswered_count;
+        const max = s.max_unanswered;
+        const statusBadge = isLimited 
+          ? `<span style="background:#fee2e2; color:#b91c1c; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">已达上限 (${count}/${max}) 熔断中</span>`
+          : (count > 0 
+            ? `<span style="background:#fef3c7; color:#b45309; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">待回复 (${count}/${max})</span>`
+            : `<span style="background:#d1fae5; color:#065f46; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">正常畅聊 (0/${max})</span>`);
+
+        return `
+          <div style="background:#ffffff; border:1px solid ${isLimited ? '#fca5a5' : 'var(--border-color)'}; border-radius:9px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;">
+                <span style="font-weight:600; font-size:14px; color:var(--text-main);">${escapeHtml(s.name)}</span>
+                ${statusBadge}
+              </div>
+              <div style="font-size:12px; color:var(--text-muted); font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                ${escapeHtml(s.session_id)}
+              </div>
+              <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+                最近活动: ${escapeHtml(s.last_message_time)} ｜ 平台账号: ${escapeHtml(s.self_id)}
+              </div>
+            </div>
+            <button class="btn-save-light" style="padding:6px 14px; font-size:12.5px; flex-shrink:0;" onclick="resetAstrBotLimits('${escapeHtml(s.session_id)}')">清零此会话</button>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      showToast('获取 AstrBot 状态失败: ' + err.message);
+    }
+  }
+
+  async function resetAstrBotLimits(sessionId = null) {
+    try {
+      showToast('正在重置主动消息未回复计数...');
+      const res = await fetch('/api/astrbot_reset_limit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+      const result = await res.json();
+      if (result.success) {
+        showToast(result.message);
+        await loadAstrBotStatus();
+      } else {
+        showToast('清零失败: ' + result.message);
+      }
+    } catch (err) {
+      showToast('请求异常: ' + err.message);
+    }
+  }
+
   // 初始化
   window.addEventListener('DOMContentLoaded', () => {
     loadStatus();
     loadPersona();
+    loadAstrBotStatus();
   });
 </script>
 
