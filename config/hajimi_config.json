@@ -1,16 +1,12 @@
 {
   "profile": {
-    "role_name": "若曦",
+    "role_name": "闪闪",
     "call_master": "主人",
-    "self_name": "人家",
-    "master_uid": 1497345954,
-    "master_name": "折木柯南",
+    "self_name": "我",
+    "master_uid": 0,
+    "master_name": "主人",
     "persona_file": "docs/gemini_persona.md",
-    "current_outfit": "青春水手校服",
-    "master_birthday": "2007-08-07",
-    "companion_uid": 3632310333213330,
-    "companion_name": "折木柯东",
-    "companion_birthday": "2007-08-07"
+    "current_outfit": "经典蓝白女仆装"
   },
   "preferences": {
     "target_zones": [
@@ -120,7 +116,8 @@
     "allow_like": false,
     "allow_coin": false,
     "allow_fav": false,
-    "comment_style": "闪闪元气口吻+硬核切入+@折木柯南"
+    "comment_style": "双子猫娘口吻+犀利提炼+@主人",
+    "allow_danmaku": true
   },
   "risk_control": {
     "min_request_interval_ms": 2500,
@@ -130,16 +127,16 @@
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
   "ai_engine": {
-    "agy_cli_path": "C:\\Users\\Lenovo\\.gemini\\bin\\agy.exe",
+    "agy_cli_path": "agy",
     "model_name": "gemini-3.8-flash-high",
     "reasoning_effort": "medium"
   },
   "auth": {
-    "is_logged_in": true,
-    "dedeuserid": "3632310333213330",
-    "sessdata": "f54a6d37%2C1808902553%2Cdcb93%2Aa2CjCx1_uaSqB6n81x_ttb4hQZSzOTdsriTKxH8-9ZNURfrpT3DqNz5kb-Xudae7Wa0gISVlVMU0xuZktqVGN3MzdNSW1xVi1DSTZlajNNMXRXc1pOcmJQWUdlQ3ROaGhlUXQ5TjFhbmxzZ0dzVjJQYXFqa2x2UzI2dzQtcE9BdkNUSGs0OThMeGFnIIEC",
-    "bili_jct": "1c87e9b272de86f0a5cc3ec1be23682a",
-    "buvid3": "9A39D969-B9AA-08A9-D95D-EA9852E9462902370infoc",
+    "is_logged_in": false,
+    "dedeuserid": "",
+    "sessdata": "",
+    "bili_jct": "",
+    "buvid3": "",
     "buvid4": ""
   }
 }

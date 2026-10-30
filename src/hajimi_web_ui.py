@@ -1,240 +1,70 @@
 # -*- coding: utf-8 -*-
 """
-赛博养Gemini · 伴生控制中心 (Cyber-Hajimi Web & Sidecar Dashboard)
-- 零额外依赖，纯 Python 原生标准库安全运行
-- 双轨设计：深度适配 Antigravity 原生 Sidecar 辅助抽屉面板与独立浏览器大屏窗口
-- 视觉排版像素级还原 DeepSeek Harness 设置弹窗风格（纯净现代、直观优雅）
-- 模块整合：养Gemini基础身份、人设注入、主人偏好、B站扫码登录、立绘衣橱与晨思晚读手记
+赛博哈基米 (Cyber-Hajimi) - 毛玻璃跨端控制中心 (Web UI & Sidecar)
+- 零第三方依赖：纯 Python 3 原生 http.server 驱动
+- 像素级还原 DeepSeek 纯净毛玻璃极客质感与 Antigravity 原生 Sidecar 抽屉规范
+- 全景可视化看过的视频、5帧时序分镜雪碧图画卷与多模态画风审美
+- 全透明互动操作审计流水：发弹幕、发评论、@主人、发私信记录实时持久化查阅
+- 站内信与@互动中枢：一键私信互通测试、B站@通知监听与私信会话管理
 """
 
 import os
 import sys
 import json
-import base64
 import time
-import threading
-import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socketserver
+import base64
 import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-
-try:
-    from http.server import ThreadingHTTPServer
-except ImportError:
-    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
-        daemon_threads = True
-
-try:
-    if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
-    else:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w", encoding="utf-8")
-    else:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+import threading
 
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SRC_DIR.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.json"
-PERSONA_PATH = PROJECT_ROOT / "docs" / "gemini_persona.md"
-PERSONA_BACKUP_PATH = PROJECT_ROOT / "docs" / "hajimi_persona.md"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.local.json"
 QRCODE_PATH = PROJECT_ROOT / "images" / "qrcode_login.png"
 JOURNALS_DIR = PROJECT_ROOT / "docs" / "journals"
+CACHE_DIR = PROJECT_ROOT / "cache"
+PERSONA_PATH = PROJECT_ROOT / "docs" / "gemini_persona.md"
+PERSONA_BACKUP_PATH = PROJECT_ROOT / "docs" / "hajimi_persona.md"
 
-sys.path.insert(0, str(SRC_DIR))
+JOURNALS_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 from bili_hajimi_core import BiliHajimiCore
 from hajimi_brain import HajimiBrain
 from hajimi_daemon import HajimiDaemon
 
-PORT = int(os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT", 8765))
 daemon_instance = HajimiDaemon(CONFIG_PATH)
 is_cruising = False
 cruise_logs_buffer = []
 
-# AstrBot 主动消息限制与会话路径定义
-ASTRBOT_DATA_DIR = Path.home() / ".astrbot" / "data"
-ASTRBOT_PROACTIVE_DATA_DIR = ASTRBOT_DATA_DIR / "plugin_data" / "astrbot_plugin_proactive_chat"
-ASTRBOT_SESSION_DATA_PATH = ASTRBOT_PROACTIVE_DATA_DIR / "session_data.json"
-ASTRBOT_OVERRIDES_PATH = ASTRBOT_PROACTIVE_DATA_DIR / "session_overrides.json"
-ASTRBOT_CONFIG_PATH = ASTRBOT_DATA_DIR / "config" / "astrbot_plugin_proactive_chat_config.json"
 
-
-def get_astrbot_proactive_status() -> dict:
-    from datetime import datetime
-    if not ASTRBOT_SESSION_DATA_PATH.exists():
-        return {
-            "installed": False,
-            "message": "未检测到 AstrBot 主动消息插件持久化数据 (session_data.json)",
-            "sessions": [],
-            "total_sessions": 0,
-            "limited_sessions": 0,
-            "max_unanswered": 4,
-            "astrbot_running": False,
-        }
-
-    try:
-        with open(ASTRBOT_SESSION_DATA_PATH, "r", encoding="utf-8") as f:
-            session_data = json.load(f)
-    except Exception:
-        session_data = {}
-
-    overrides = {}
-    if ASTRBOT_OVERRIDES_PATH.exists():
-        try:
-            with open(ASTRBOT_OVERRIDES_PATH, "r", encoding="utf-8") as f:
-                overrides = json.load(f)
-        except Exception:
-            overrides = {}
-
-    max_unanswered = 4
-    if ASTRBOT_CONFIG_PATH.exists():
-        try:
-            with open(ASTRBOT_CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                max_unanswered = cfg.get("friend_settings", {}).get("schedule_settings", {}).get("max_unanswered_times", 4)
-        except Exception:
-            pass
-
-    sessions_list = []
-    limited_count = 0
-
-    for sid, info in session_data.items():
-        if not isinstance(info, dict):
-            continue
-        unanswered = info.get("unanswered_count", 0)
-        is_limited = (unanswered >= max_unanswered) if max_unanswered > 0 else False
-        if is_limited:
-            limited_count += 1
-
-        override_item = overrides.get(sid, {})
-        custom_name = override_item.get("session_name", "")
-        if not custom_name:
-            if "weixin" in sid.lower():
-                tail = sid.split(":")[-1]
-                custom_name = f"微信私聊 ({tail[:10]}...)" if len(tail) > 10 else f"微信私聊 ({tail})"
-            elif "GroupMessage" in sid:
-                tail = sid.split(":")[-1]
-                custom_name = f"QQ群聊 ({tail[:8]})"
-            else:
-                tail = sid.split(":")[-1]
-                custom_name = f"QQ私聊 ({tail[:8]}...)" if len(tail) > 8 else f"QQ私聊 ({tail})"
-
-        last_time = info.get("last_message_time", 0)
-        time_str = "无记录"
-        if last_time > 0:
-            try:
-                time_str = datetime.fromtimestamp(last_time).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                time_str = str(last_time)
-
-        sessions_list.append({
-            "session_id": sid,
-            "name": custom_name,
-            "self_id": info.get("self_id", "default"),
-            "unanswered_count": unanswered,
-            "max_unanswered": max_unanswered,
-            "is_limited": is_limited,
-            "last_message_time": time_str,
-        })
-
-    astrbot_running = False
-    try:
-        import subprocess
-        out = subprocess.check_output('tasklist /FI "IMAGENAME eq AstrBot.exe" /NH', shell=True).decode("gbk", errors="ignore")
-        astrbot_running = "AstrBot.exe" in out
-    except Exception:
-        pass
-
-    return {
-        "installed": True,
-        "sessions": sessions_list,
-        "total_sessions": len(sessions_list),
-        "limited_sessions": limited_count,
-        "max_unanswered": max_unanswered,
-        "astrbot_running": astrbot_running,
-    }
-
-
-def reset_astrbot_proactive_limits(target_session_id: str | None = None) -> dict:
-    if not ASTRBOT_SESSION_DATA_PATH.exists():
-        return {"success": False, "message": "未找到 AstrBot session_data.json 数据文件"}
-
-    try:
-        with open(ASTRBOT_SESSION_DATA_PATH, "r", encoding="utf-8") as f:
-            session_data = json.load(f)
-    except Exception as e:
-        return {"success": False, "message": f"读取 session_data.json 失败: {e}"}
-
-    reset_count = 0
-    for sid, info in session_data.items():
-        if not isinstance(info, dict):
-            continue
-        if target_session_id and sid != target_session_id:
-            continue
-        info["unanswered_count"] = 0
-        reset_count += 1
-
-    try:
-        with open(ASTRBOT_SESSION_DATA_PATH, "w", encoding="utf-8") as f:
-            json.dump(session_data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        return {"success": False, "message": f"持久化写入 session_data.json 失败: {e}"}
-
-    api_synced = False
-    try:
-        import urllib.request
-        req = urllib.request.Request("http://127.0.0.1:4100/api/jobs/reset-all-unanswered", data=b"{}", headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=0.6) as resp:
-            if resp.status == 200:
-                api_synced = True
-    except Exception:
-        pass
-
-    msg = f"已成功将 {reset_count} 个会话的主动消息未回复计数清零！"
-    if api_synced:
-        msg += " (已同步通知 AstrBot 内存即时生效)"
-    else:
-        msg += " (已持久化存盘)"
-
-    return {
-        "success": True,
-        "message": msg,
-        "reset_count": reset_count,
-        "api_synced": api_synced,
-    }
-
-
-class HajimiHandler(BaseHTTPRequestHandler):
+class HajimiWebHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
     def _send_json(self, data: dict, code: int = 200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")
+        self.end_headers()
         try:
-            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
-            self.end_headers()
             self.wfile.write(body)
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
             pass
 
-    def _send_html(self, html_text: str):
+    def _send_html(self, html_str: str, code: int = 200):
+        body = html_str.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
         try:
-            body = html_text.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
             self.wfile.write(body)
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
             pass
@@ -244,6 +74,7 @@ class HajimiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Connection", "close")
         self.end_headers()
 
     def do_GET(self):
@@ -251,23 +82,26 @@ class HajimiHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        if path in ["/", "/index.html"]:
-            self._send_html(INDEX_HTML)
+        if path == "/":
+            self._send_html(get_dashboard_html())
         elif path == "/api/status":
-            daemon_instance.update_stamina()
             user_info = daemon_instance.core.get_user_info()
+            in_win, win_info = daemon_instance.is_in_active_window()
             resp = {
                 "user": user_info,
+                "current_window": win_info,
+                "in_window": in_win,
                 "stamina": daemon_instance.state.get("stamina", 100),
                 "at_count_today": daemon_instance.state.get("at_count_today", 0),
                 "watched_count": len(daemon_instance.state.get("watched_today", [])),
                 "treasures_count": len(daemon_instance.state.get("treasures_today", [])),
                 "morning_done": daemon_instance.state.get("morning_journal_done", False),
                 "evening_done": daemon_instance.state.get("evening_journal_done", False),
-                "recent": daemon_instance.state.get("recent_evaluations", [])[:20],
+                "recent": daemon_instance.state.get("recent_evaluations", [])[:80],
+                "activity_logs": daemon_instance.state.get("activity_logs", [])[:150],
                 "config": daemon_instance.config,
                 "is_cruising": is_cruising,
-                "cruise_logs": cruise_logs_buffer[-30:],
+                "cruise_logs": cruise_logs_buffer[-40:],
             }
             self._send_json(resp)
         elif path == "/api/qrcode":
@@ -300,7 +134,7 @@ class HajimiHandler(BaseHTTPRequestHandler):
                 for f in sorted(JOURNALS_DIR.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
                     try:
                         mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
-                        snippet = f.read_text(encoding="utf-8-sig", errors="replace")[:240].strip()
+                        snippet = f.read_text(encoding="utf-8-sig", errors="replace")[:300].strip()
                         journals.append({
                             "filename": f.name,
                             "path": str(f),
@@ -320,9 +154,18 @@ class HajimiHandler(BaseHTTPRequestHandler):
                 if target.exists() and target.is_file():
                     content = target.read_text(encoding="utf-8-sig", errors="replace")
             self._send_json({"content": content})
-        elif path.startswith("/images/"):
-            rel_name = urllib.parse.unquote(path[len("/images/"):])
-            img_file = PROJECT_ROOT / "images" / rel_name
+        elif path == "/api/at_notifications":
+            items = daemon_instance.core.get_at_notifications()
+            self._send_json({"success": True, "items": items})
+        elif path == "/api/sessions":
+            sessions = daemon_instance.core.get_unread_sessions()
+            self._send_json({"success": True, "sessions": sessions})
+        elif path.startswith("/images/") or path.startswith("/cache/"):
+            is_cache = path.startswith("/cache/")
+            prefix_len = len("/cache/") if is_cache else len("/images/")
+            base_folder = PROJECT_ROOT / "cache" if is_cache else PROJECT_ROOT / "images"
+            rel_name = urllib.parse.unquote(path[prefix_len:])
+            img_file = base_folder / rel_name
             if img_file.exists() and img_file.is_file():
                 suffix = img_file.suffix.lower()
                 mime = "image/png" if suffix == ".png" else ("image/jpeg" if suffix in [".jpg", ".jpeg"] else "application/octet-stream")
@@ -338,33 +181,7 @@ class HajimiHandler(BaseHTTPRequestHandler):
                 except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                     pass
             else:
-                self.send_error(404)
-        elif path == "/api/gallery":
-            gallery_data = [
-                {"id": "school", "title": "【青春水手校服】日常最爱", "category": "服装", "url": "/images/Gemini猫娘_水手校服_正面立绘_透明底.png", "desc": "闪闪日常最爱！藏青短裙与浅蓝领巾，充满网瘾学生妹活力的极速冲浪装扮。"},
-                {"id": "casual", "title": "【原版极客常服】极客战袍", "category": "服装", "url": "/images/Gemini猫娘_原版常服_正面立绘_透明底.png", "desc": "深海蓝与纯白拼接连帽短衫，胸前悬浮微型全息立方体，严谨代码工作时必选。"},
-                {"id": "maid", "title": "【经典蓝白女仆装】执事执勤", "category": "服装", "url": "/images/Gemini猫娘_女仆装_正面立绘_透明底.png", "desc": "端庄利落的女仆裙配极客电路滚边，想要认真服侍主人起居时换上。"},
-                {"id": "eyes", "title": "异色双眸特写 (左紫右黄)", "category": "特写", "url": "/images/Gemini猫娘_异色双眸特写_左紫右黄.jpg", "desc": "左眼万维理智星云紫(#6D28D9)，右眼元气金黄(#F59E0B)带四角金星芒(✨)。"},
-                {"id": "sheet_school", "title": "三视图：水手校服设定", "category": "工程三视图", "url": "/images/Gemini猫娘_三视图_校服设定.png", "desc": "正面、侧面、背面完整校服三视图规范图纸。"},
-                {"id": "sheet_origin", "title": "三视图：原版常服设定", "category": "工程三视图", "url": "/images/Gemini猫娘_三视图_原版设定.png", "desc": "原版连帽衫三视图全维度工程设定图。"},
-                {"id": "sheet_maid", "title": "三视图：女仆装设定", "category": "工程三视图", "url": "/images/Gemini猫娘_三视图_女仆装设定.jpg", "desc": "蓝白女仆装三视图全套工程图纸。"}
-            ]
-            self._send_json(gallery_data)
-        elif path == "/api/qrcode_img":
-            if QRCODE_PATH.exists():
-                data = QRCODE_PATH.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                try:
-                    self.wfile.write(data)
-                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-                    pass
-            else:
-                self.send_error(404)
-        elif path == "/api/astrbot_status":
-            self._send_json(get_astrbot_proactive_status())
+                self.send_error(404, "File not found")
         else:
             self.send_error(404)
 
@@ -384,18 +201,16 @@ class HajimiHandler(BaseHTTPRequestHandler):
             try:
                 new_cfg = payload.get("config", {})
                 if new_cfg:
-                    # 递归/分层更新，保证未显式展示的字段原样保留
                     for k, v in new_cfg.items():
                         if isinstance(v, dict) and isinstance(daemon_instance.config.get(k), dict):
                             daemon_instance.config[k].update(v)
                         else:
                             daemon_instance.config[k] = v
 
-                    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                        json.dump(daemon_instance.config, f, ensure_ascii=False, indent=2)
                     daemon_instance.core.config = daemon_instance.config
                     daemon_instance.brain.config = daemon_instance.config
-                self._send_json({"success": True, "message": "配置已保存至 config/hajimi_config.json！"})
+                    daemon_instance.core.save_config()
+                self._send_json({"success": True, "message": "配置已成功保存并即时生效！"})
             except Exception as e:
                 self._send_json({"success": False, "message": str(e)}, 500)
 
@@ -425,115 +240,101 @@ class HajimiHandler(BaseHTTPRequestHandler):
                     res = daemon_instance.run_cruise_cycle(force=True)
                     for l in res.get("logs", []):
                         cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] {l}")
-                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 本次巡航任务圆满达成！")
+                    cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] 🎉 本次巡航任务圆满达成！已同步更新工作记录与审计流水。")
                 except Exception as e:
                     cruise_logs_buffer.append(f"[{time.strftime('%H:%M:%S')}] ⚠ 巡航遇到波动: {e}")
                 finally:
                     is_cruising = False
 
-            threading.Thread(target=_run, daemon=True).start()
-            self._send_json({"success": True, "message": "已派闪闪出击巡航！可切换至【巡航与日志】查看实时动态。"})
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": "已成功唤起闪闪！全速巡航中..."})
+
+        elif path == "/api/send_pm":
+            target_uid = payload.get("receiver_uid") or daemon_instance.config.get("profile", {}).get("master_uid")
+            content = payload.get("content") or "🐾 主人！这是闪闪来自控制中心的站内私信测试喵~ ✨"
+            if not target_uid:
+                self._send_json({"success": False, "message": "未配置主人 UID，请在设置中先填写主人 UID！"})
+                return
+
+            res = daemon_instance.core.send_private_message(int(target_uid), content)
+            status = "成功" if res.get("success") else "失败"
+            daemon_instance.log_activity("发站内私信(测试)", f"主人UID: {target_uid}", content, status=status, details=res.get("message", ""))
+            self._send_json(res)
 
         elif path == "/api/morning_journal":
-            doc_path = daemon_instance.generate_morning_journal_file()
-            self._send_json({"success": bool(doc_path), "path": doc_path})
+            path_file = daemon_instance.generate_morning_journal_file()
+            daemon_instance.log_activity("生成手记", "晨思早安手记", f"归档文件: {Path(path_file).name}", status="成功")
+            self._send_json({"success": True, "message": f"晨思手记已生成: {path_file}"})
 
         elif path == "/api/evening_journal":
-            doc_path = daemon_instance.generate_evening_journal_file()
-            self._send_json({"success": bool(doc_path), "path": doc_path})
+            path_file = daemon_instance.generate_evening_journal_file()
+            daemon_instance.log_activity("生成手记", "晚读宝藏手记", f"归档文件: {Path(path_file).name}", status="成功")
+            self._send_json({"success": True, "message": f"晚读手记已生成: {path_file}"})
 
-        elif path == "/api/open_folder":
-            try:
-                os.system(f'explorer "{JOURNALS_DIR}"')
-                self._send_json({"success": True})
-            except Exception as e:
-                self._send_json({"success": False, "message": str(e)})
-
-        elif path == "/api/open_config_file":
-            try:
-                os.startfile(CONFIG_PATH)
-                self._send_json({"success": True})
-            except Exception as e:
-                self._send_json({"success": False, "message": str(e)})
-
-        elif path == "/api/open_persona_file":
-            try:
-                os.startfile(PERSONA_PATH)
-                self._send_json({"success": True})
-            except Exception as e:
-                self._send_json({"success": False, "message": str(e)})
-
-        elif path == "/api/astrbot_reset_limit":
-            target_sid = payload.get("session_id")
-            result = reset_astrbot_proactive_limits(target_sid)
-            self._send_json(result)
+        elif path == "/api/clear_audit":
+            daemon_instance.state["activity_logs"] = []
+            daemon_instance.save_state()
+            self._send_json({"success": True, "message": "审计流水已清空！"})
 
         else:
             self.send_error(404)
 
 
-INDEX_HTML = r"""<!DOCTYPE html>
+def get_dashboard_html() -> str:
+    return """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>赛博养Gemini · 伴生控制中心</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>赛博养Gemini · 全息监控与伴生中枢</title>
   <style>
     :root {
-      --bg-page: #f5f6f8;
-      --card-bg: #ffffff;
-      --border-color: #e5e7eb;
-      --border-light: #f1f3f5;
-      --text-main: #111827;
+      --bg-color: #f7f9fc;
+      --sidebar-bg: #f1f4f9;
+      --text-main: #1f2937;
       --text-sub: #4b5563;
       --text-muted: #6b7280;
-      --accent: #2563eb;
-      --accent-soft: rgba(37, 99, 235, 0.08);
-      --nav-active: #eceef1;
-      --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --border-color: #e5e7eb;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-light: #eef2ff;
+      --card-bg: #ffffff;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: var(--bg-page);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-color);
       color: var(--text-main);
-      font-family: var(--font-family);
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       display: flex;
-      justify-content: center;
-      align-items: stretch;
-      padding: 0;
     }
 
-    /* 整体容器：模仿 DSH 现代弹窗卡片风格 */
     .app-window {
-      width: 100%;
-      max-width: 1060px;
-      min-height: 100vh;
-      background: var(--card-bg);
       display: flex;
-      flex-direction: row;
-      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+      width: 100vw;
+      height: 100vh;
+      background: #ffffff;
     }
 
-    /* 左侧侧边栏导航 */
+    /* 左侧侧边栏 */
     .sidebar {
-      width: 220px;
-      flex-shrink: 0;
+      width: 250px;
+      min-width: 250px;
+      background: var(--sidebar-bg);
       border-right: 1px solid var(--border-color);
-      background: #fafbfc;
       display: flex;
       flex-direction: column;
-      padding: 24px 12px;
-    }
-    .sidebar-header {
-      padding: 0 12px 18px 12px;
-      margin-bottom: 8px;
-      border-bottom: 1px solid var(--border-light);
+      padding: 16px 10px;
     }
     .brand-title {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
-      color: var(--text-main);
+      color: #111827;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -541,252 +342,316 @@ INDEX_HTML = r"""<!DOCTYPE html>
     .brand-subtitle {
       font-size: 12px;
       color: var(--text-muted);
-      margin-top: 2px;
+      margin-top: 3px;
+      margin-left: 34px;
     }
     .nav-list {
+      list-style: none;
+      margin-top: 20px;
       display: flex;
       flex-direction: column;
       gap: 4px;
-      list-style: none;
-      flex-grow: 1;
     }
     .nav-item {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 10px 14px;
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--text-sub);
+      padding: 9px 12px;
       border-radius: 8px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: #4b5563;
       cursor: pointer;
       transition: all 0.15s ease;
       user-select: none;
     }
     .nav-item:hover {
-      background: #f1f3f5;
-      color: var(--text-main);
+      background: #e5e9f0;
+      color: #111827;
     }
     .nav-item.active {
-      background: var(--nav-active);
-      color: #000000;
+      background: #e0e7ff;
+      color: var(--accent);
       font-weight: 600;
     }
-    .nav-icon {
-      font-size: 16px;
-      width: 20px;
-      display: inline-flex;
-      justify-content: center;
-    }
+    .nav-icon { font-size: 16px; width: 20px; text-align: center; }
 
     .sidebar-footer {
+      margin-top: auto;
       padding: 12px;
-      border-top: 1px solid var(--border-light);
-      font-size: 11px;
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 11.5px;
       color: var(--text-muted);
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
     /* 右侧主视窗 */
     .main-viewport {
-      flex-grow: 1;
-      padding: 32px 40px;
+      flex: 1;
+      height: 100vh;
       overflow-y: auto;
-      max-height: 100vh;
+      padding: 24px 32px;
+      background: #ffffff;
     }
+    .tab-view { display: none; }
+    .tab-view.active { display: block; }
 
-    /* 顶部操作条（右上角动作按钮） */
+    /* 顶部全局统计状态条 */
+    .top-stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+    .stat-pill {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .stat-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+    .stat-val { font-size: 20px; font-weight: 700; color: #0f172a; }
+
     .view-header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-color);
     }
-    .header-actions {
-      display: flex;
-      gap: 8px;
-    }
-    .btn-action-top {
-      padding: 6px 14px;
+    .title-block h1 { font-size: 20px; font-weight: 700; color: #111827; }
+    .title-block .desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+    .header-actions { display: flex; gap: 8px; }
+
+    .btn-action {
       background: #ffffff;
       border: 1px solid #d1d5db;
-      border-radius: 6px;
+      padding: 7px 14px;
+      border-radius: 7px;
       font-size: 13px;
       font-weight: 500;
       color: #374151;
       cursor: pointer;
-      transition: all 0.15s ease;
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
+      transition: all 0.15s;
     }
-    .btn-action-top:hover {
-      background: #f9fafb;
+    .btn-action:hover {
+      background: #f3f4f6;
       border-color: #9ca3af;
-      color: #111827;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
     }
 
-    /* 大标题与副标题（像素级还原图2 DSH风格） */
-    .title-block h1 {
-      font-size: 26px;
-      font-weight: 700;
-      color: var(--text-main);
-      margin-bottom: 8px;
-      letter-spacing: -0.02em;
-    }
-    .title-block p.desc {
-      font-size: 13.5px;
-      color: var(--text-sub);
-      line-height: 1.6;
-      max-width: 680px;
-    }
-
-    /* 表单区块 */
-    .section-block {
-      margin-top: 28px;
-      padding-top: 24px;
-      border-top: 1px solid var(--border-light);
-    }
-    .section-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-main);
-      margin-bottom: 16px;
-    }
-
-    .form-group {
+    /* 视频质检卡片流 */
+    .eval-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 18px;
       margin-bottom: 18px;
-    }
-    .form-label {
-      display: block;
-      font-size: 13.5px;
-      font-weight: 500;
-      color: #1f2937;
-      margin-bottom: 5px;
-    }
-    .form-hint {
-      font-size: 12.5px;
-      color: var(--text-muted);
-      margin-top: 4px;
-    }
-    .form-input {
-      width: 100%;
-      max-width: 540px;
-      padding: 8px 12px;
-      font-size: 14px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      color: var(--text-main);
       background: #ffffff;
-      outline: none;
-      transition: border 0.15s ease;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      transition: transform 0.15s, box-shadow 0.15s;
     }
-    .form-input:focus {
-      border-color: #111827;
-      box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.05);
+    .eval-card:hover {
+      box-shadow: 0 6px 20px rgba(0,0,0,0.06);
     }
-
-    /* 人设文本域与高亮黑色按钮 */
-    .persona-textarea {
-      width: 100%;
-      height: 220px;
-      padding: 12px;
-      font-size: 13px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      line-height: 1.6;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #ffffff;
-      color: #1f2937;
-      outline: none;
-      resize: vertical;
-      white-space: pre-wrap;
-    }
-    .persona-textarea:focus {
-      border-color: #111827;
-    }
-    .persona-bar {
+    .eval-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-top: 8px;
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
-    .char-count {
-      font-size: 12.5px;
-      color: var(--text-muted);
-    }
-    .btn-inject {
-      width: 100%;
-      padding: 11px 20px;
-      background: #111827;
-      color: #ffffff;
-      border: none;
-      border-radius: 7px;
-      font-size: 14px;
+    .eval-title {
+      font-size: 15px;
       font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s ease;
-      display: flex;
-      justify-content: center;
+      color: #111827;
+      text-decoration: none;
+    }
+    .eval-title:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+    .score-badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12.5px;
+      font-weight: 700;
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
     }
-    .btn-inject:hover {
-      background: #27272a;
+    .score-badge.high { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+    .score-badge.mid { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+    .score-badge.low { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+    .eval-meta { font-size: 12.5px; color: var(--text-muted); margin-bottom: 10px; }
+
+    .eval-visual-strip {
+      margin: 12px 0;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      background: #0f172a;
+      position: relative;
     }
-    .btn-save-light {
-      padding: 8px 16px;
-      background: #ffffff;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      font-size: 13.5px;
-      font-weight: 500;
-      color: #1f2937;
+    .eval-visual-strip img {
+      width: 100%;
+      height: auto;
+      display: block;
       cursor: pointer;
-      transition: all 0.15s ease;
     }
-    .btn-save-light:hover {
-      background: #f9fafb;
-      border-color: #9ca3af;
+    .strip-hint {
+      position: absolute;
+      bottom: 4px;
+      right: 8px;
+      background: rgba(0,0,0,0.65);
+      color: #fff;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      pointer-events: none;
     }
 
-    /* 视图切换隐藏 */
-    .tab-view { display: none; }
-    .tab-view.active { display: block; animation: fadeIn 0.2s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .eval-visual-critique {
+      background: #f0fdf4;
+      border-left: 3px solid #10b981;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #065f46;
+      line-height: 1.5;
+    }
+    .eval-highlight {
+      background: #f8fafc;
+      border-left: 3px solid #3b82f6;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #1e3a8a;
+      line-height: 1.5;
+    }
+    .eval-cat-comment {
+      background: #fdf2f8;
+      border-left: 3px solid #ec4899;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #9d174d;
+      line-height: 1.5;
+    }
 
-    /* 账号状态卡片 */
-    .status-card {
-      background: #ffffff;
-      border: 1px solid var(--border-color);
+    /* 审计流水表格 */
+    .audit-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 14px;
+    }
+    .audit-table th, .audit-table td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .audit-table th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: #475569;
+    }
+    .audit-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .badge-comment { background: #e0e7ff; color: #4338ca; }
+    .badge-danmaku { background: #fef3c7; color: #b45309; }
+    .badge-pm { background: #fce7f3; color: #be185d; }
+    .badge-vision { background: #dcfce7; color: #15803d; }
+    .badge-success { background: #d1fae5; color: #047857; }
+    .badge-fail { background: #fee2e2; color: #b91c1c; }
+
+    /* 站内信互动测试面板 */
+    .pm-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
       border-radius: 12px;
       padding: 20px;
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
-    .avatar-box {
-      width: 72px;
-      height: 72px;
-      border-radius: 50%;
-      overflow: hidden;
-      border: 2px solid var(--border-color);
-      flex-shrink: 0;
-      background: #f1f3f5;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-    }
-    .avatar-box img {
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    .form-control {
       width: 100%;
-      height: 100%;
-      object-fit: cover;
-      object-position: top center;
-      display: block;
+      padding: 9px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 7px;
+      font-size: 13.5px;
+      outline: none;
     }
-    .info-fields { flex-grow: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
-    .field-label { font-size: 12px; color: var(--text-muted); }
-    .field-val { font-size: 14px; font-weight: 600; color: var(--text-main); margin-top: 2px; }
+    .form-control:focus { border-color: var(--accent); }
+
+    .notice-card {
+      background: #fffbeb;
+      border: 1px solid #fef3c7;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 12.5px;
+      color: #92400e;
+      line-height: 1.6;
+      margin-top: 12px;
+    }
+
+    /* 控制台日志流 */
+    .console-box {
+      background: #111827;
+      color: #38bdf8;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      line-height: 1.55;
+      padding: 16px;
+      border-radius: 8px;
+      height: 380px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* 吐司通知条 */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #111827;
+      color: #ffffff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13.5px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.25s ease;
+      z-index: 9999;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
 
     /* 立绘衣橱网格 */
     .gallery-grid {
@@ -800,12 +665,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       border-radius: 10px;
       overflow: hidden;
       background: #ffffff;
-      transition: transform 0.2s, box-shadow 0.2s;
       cursor: pointer;
-    }
-    .outfit-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(0,0,0,0.06);
     }
     .outfit-preview {
       height: 240px;
@@ -813,325 +673,210 @@ INDEX_HTML = r"""<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
     }
     .outfit-preview img {
       max-width: 90%;
       max-height: 90%;
       object-fit: contain;
     }
-    .outfit-meta {
-      padding: 12px;
-    }
+    .outfit-meta { padding: 12px; }
     .outfit-title { font-size: 13.5px; font-weight: 600; color: var(--text-main); }
-    .outfit-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
-
-    /* 手记列表 */
-    .journal-item {
-      padding: 16px;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      margin-bottom: 12px;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .journal-item:hover { background: #fafafa; }
-    .journal-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
-    .journal-title { font-size: 14px; font-weight: 600; color: var(--text-main); }
-    .journal-time { font-size: 12px; color: var(--text-muted); }
-    .journal-snippet { font-size: 12.5px; color: var(--text-sub); line-height: 1.5; }
-
-    /* 控制台日志流 */
-    .console-box {
-      background: #111827;
-      color: #38bdf8;
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      font-size: 12.5px;
-      line-height: 1.55;
-      padding: 16px;
-      border-radius: 8px;
-      height: 320px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-    }
-
-    /* 吐司通知 Toast */
-    .toast {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      padding: 12px 20px;
-      background: #111827;
-      color: #ffffff;
-      border-radius: 8px;
-      font-size: 13.5px;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.15);
-      opacity: 0;
-      transform: translateY(10px);
-      transition: all 0.25s ease;
-      pointer-events: none;
-      z-index: 9999;
-    }
-    .toast.show { opacity: 1; transform: translateY(0); }
-
-    /* 窄屏自适应 (Antigravity Auxiliary Pane 侧栏模式) */
-    @media (max-width: 768px) {
-      .app-window { flex-direction: column; }
-      .sidebar {
-        width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border-color);
-        padding: 12px 16px;
-      }
-      .nav-list {
-        flex-direction: row;
-        overflow-x: auto;
-        padding-bottom: 4px;
-      }
-      .nav-item { white-space: nowrap; padding: 6px 12px; font-size: 13px; }
-      .sidebar-footer { display: none; }
-      .main-viewport { padding: 20px 16px; }
-      .view-header { flex-direction: column; gap: 12px; }
-      .header-actions { width: 100%; flex-wrap: wrap; }
-      .form-input { max-width: 100%; }
-    }
+    .outfit-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
   </style>
 </head>
 <body>
 
 <div class="app-window">
-  <!-- 左侧设置导航栏（图2 DSH风格） -->
+  <!-- 左侧导航 -->
   <aside class="sidebar">
-    <div class="sidebar-header">
-      <div class="brand-title">
-        <img src="/images/Gemini猫娘_闪闪头像_水手服特写.png" style="width:26px;height:26px;border-radius:50%;object-fit:cover;object-position:top center;border:1.5px solid #d1d5db;" alt="Icon">
-        <span>赛博养Gemini</span>
-      </div>
-      <div class="brand-subtitle">闪闪 · Gemini 3.8 Flash</div>
+    <div class="brand-title">
+      <img src="/images/Gemini猫娘_双子星官方圆形头像.png" style="width:28px;height:28px;border-radius:50%;" alt="Icon">
+      <span>赛博养Gemini · 双子星</span>
     </div>
+    <div class="brand-subtitle">全息监控与伴生中枢</div>
+
     <ul class="nav-list">
-      <li class="nav-item active" onclick="switchTab('tab-gemini')">
-        <span class="nav-icon">⚙</span>
-        <span>养Gemini</span>
+      <li class="nav-item active" onclick="switchTab('tab-videos')">
+        <span class="nav-icon">📺</span>
+        <span>视频与工作记录</span>
       </li>
-      <li class="nav-item" onclick="switchTab('tab-account')">
-        <span class="nav-icon">👤</span>
-        <span>账号与状态</span>
+      <li class="nav-item" onclick="switchTab('tab-audit')">
+        <span class="nav-icon">📜</span>
+        <span>互动操作审计</span>
       </li>
-      <li class="nav-item" onclick="switchTab('tab-wardrobe')">
-        <span class="nav-icon">👗</span>
-        <span>闪闪立绘衣橱</span>
-      </li>
-      <li class="nav-item" onclick="switchTab('tab-journals')">
-        <span class="nav-icon">📝</span>
-        <span>晨思晚读手记</span>
+      <li class="nav-item" onclick="switchTab('tab-messages')">
+        <span class="nav-icon">💬</span>
+        <span>站内信与@互动测试</span>
       </li>
       <li class="nav-item" onclick="switchTab('tab-cruise')">
         <span class="nav-icon">🚀</span>
         <span>巡航与即时召唤</span>
       </li>
-      <li class="nav-item" onclick="switchTab('tab-astrbot')">
-        <span class="nav-icon">🤖</span>
-        <span>AstrBot主动消息</span>
+      <li class="nav-item" onclick="switchTab('tab-journals')">
+        <span class="nav-icon">📝</span>
+        <span>晨思晚读与手记</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('tab-wardrobe')">
+        <span class="nav-icon">👗</span>
+        <span>立绘衣橱</span>
+      </li>
+      <li class="nav-item" onclick="switchTab('tab-gemini')">
+        <span class="nav-icon">⚙</span>
+        <span>系统与人设配置</span>
       </li>
     </ul>
+
     <div class="sidebar-footer">
-      <div>引擎: Gemini 3.8 Flash</div>
-      <div>宿主: Google Antigravity</div>
-      <div>模式: 原生会话 $0 额度</div>
+      <div>🧠 驱动内核: Gemini 3.8 Flash</div>
+      <div>⚡ 多模态: VideoShot 5帧雪碧图</div>
+      <div>🐾 状态: 持久化自动归档开启</div>
     </div>
   </aside>
 
-  <!-- 右侧主内容视窗 -->
+  <!-- 主视窗 -->
   <main class="main-viewport">
     
-    <!-- Tab 1: 养Gemini (像素级复刻图2 DSH 设置页) -->
-    <div id="tab-gemini" class="tab-view active">
+    <!-- 全局状态顶栏 -->
+    <div class="top-stats-bar">
+      <div class="stat-pill">
+        <span class="stat-label">今日已看视频</span>
+        <span id="statWatched" class="stat-val">0</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">今日宝藏神作</span>
+        <span id="statTreasures" class="stat-val" style="color:#059669;">0</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">今日互动与 @ 次数</span>
+        <span id="statInteractions" class="stat-val" style="color:#4f46e5;">0</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">仿生精力池</span>
+        <span id="statStamina" class="stat-val" style="color:#ea580c;">100 / 100</span>
+      </div>
+    </div>
+
+    <!-- Tab 1: 视频质检画卷 (默认显示，解决痛点 1) -->
+    <div id="tab-videos" class="tab-view active">
       <div class="view-header">
         <div class="title-block">
-          <h1>养Gemini</h1>
-          <p class="desc">让闪闪自己按作息刷 B 站、看懂视频、写两本日记，把值得的 @ 你。所有值写进 <code>config/hajimi_config.json</code>（与工具链共用同一份 √；这里没显示的字段保存时原样保留 √）。</p>
+          <h1>📺 视频与工作记录画卷</h1>
+          <p class="desc">实时持久化呈现猫娘读过的所有视频：5帧时序分镜雪碧图、多模态画风点评、干货浓缩与操作状态（刷新重进绝不丢失）。</p>
         </div>
         <div class="header-actions">
-          <button class="btn-action-top" onclick="openConfigFile()">打开配置文件</button>
-          <button class="btn-action-top" onclick="openPersonaFile()">打开人设文件</button>
+          <button class="btn-action" onclick="loadStatus()">🔄 刷新列表</button>
+          <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪出击巡航</button>
         </div>
       </div>
-
-      <!-- 她是谁 -->
-      <div class="section-block" style="border-top: none; margin-top: 0; padding-top: 0;">
-        <div class="section-title">她是</div>
-        <div class="form-group">
-          <label class="form-label">角色名</label>
-          <input type="text" id="roleName" class="form-input" placeholder="闪闪">
-          <div class="form-hint">她怎么被称呼</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">她怎么称呼你</label>
-          <input type="text" id="callMaster" class="form-input" placeholder="主人">
-          <div class="form-hint">例如「主人」</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">她怎么自称</label>
-          <input type="text" id="selfName" class="form-input" placeholder="人家">
-          <div class="form-hint">例如「我」/「人家」/「闪闪喵」</div>
-        </div>
-        <button class="btn-save-light" onclick="saveProfile()">保存基础身份设定</button>
-      </div>
-
-      <!-- 她的人设（只属于她） -->
-      <div class="section-block">
-        <div class="section-title">她的人设（只属于她）</div>
-        <div class="form-group">
-          <label class="form-label">人设正文</label>
-          <div class="form-hint" style="margin-bottom: 8px;">
-            写到 <code>docs/gemini_persona.md</code>，只影响她（不影响别的会话 √）。每次唤醒/监听都会附在提示里 √<br>
-            建议写：身份与来历 / 说话腔调 / 在意什么、怕什么 / 明确不要的行为。上限 20000 字，注入时只取前 3000 字 √
-          </div>
-          <textarea id="personaContent" class="persona-textarea" placeholder="正在加载闪闪人设正文..."></textarea>
-          <div class="persona-bar">
-            <span id="personaCount" class="char-count">当前 0 字符 · 0 字节</span>
-          </div>
-          <button class="btn-inject" onclick="injectPersona()">
-            <span>注入人设</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- 你（主人） -->
-      <div class="section-block">
-        <div class="section-title">你（主人）</div>
-        <div class="form-group">
-          <label class="form-label">主人 B站 UID</label>
-          <input type="number" id="masterUid" class="form-input" placeholder="0">
-          <div class="form-hint">B站用户数字 UID，用于评论区 @主人 时精准识别匹配</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">主人称谓</label>
-          <input type="text" id="masterName" class="form-input" placeholder="主人">
-          <div class="form-hint">在手记与互动中使用的称谓</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">偏好关键词</label>
-          <input type="text" id="keywordsPrefer" class="form-input" placeholder="AI, 大模型, 显卡, 极客, 科技, 动画">
-          <div class="form-hint">逗号分隔，闪闪刷 B 站时会优先挑选包含这些关键词的高价值视频</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">黑名单关键词</label>
-          <input type="text" id="keywordsBlacklist" class="form-input" placeholder="标题党, 营销号, 低俗, 纯剧透">
-          <div class="form-hint">逗号分隔，包含这些内容的低质洗稿视频一律避开跳过</div>
-        </div>
-        <button class="btn-save-light" onclick="saveMasterPrefs()">保存主人偏好设定</button>
-      </div>
-
-      <!-- 仿生作息与风控 -->
-      <div class="section-block">
-        <div class="section-title">仿生作息与风控</div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px;">
-          <div class="form-group">
-            <label class="form-label">晨思手记推送时间</label>
-            <input type="text" id="morningTime" class="form-input" placeholder="09:30">
-          </div>
-          <div class="form-group">
-            <label class="form-label">晚读手记推送时间</label>
-            <input type="text" id="eveningTime" class="form-input" placeholder="22:30">
-          </div>
-          <div class="form-group">
-            <label class="form-label">单次巡航视频处理上限</label>
-            <input type="number" id="maxVideos" class="form-input" placeholder="6">
-          </div>
-          <div class="form-group">
-            <label class="form-label">每日最大触发 @ 限制</label>
-            <input type="number" id="maxAt" class="form-input" placeholder="3">
-          </div>
-        </div>
-        <button class="btn-save-light" onclick="saveSchedule()">保存作息与风控</button>
+      <div id="videoListContainer">
+        <!-- 动态加载视频卡片 -->
+        <div style="padding:40px; text-align:center; color:#9ca3af;">正在加载历史视频记录...</div>
       </div>
     </div>
 
-    <!-- Tab 2: 账号与状态 -->
-    <div id="tab-account" class="tab-view">
+    <!-- Tab 2: 互动操作审计台账 (解决痛点 2) -->
+    <div id="tab-audit" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>账号与登录状态</h1>
-          <p class="desc">闪闪使用本地免 API 成本会话，并连接你的 B 站账号巡航推荐流、抓取 CC 字幕与互动。</p>
+          <h1>📜 互动操作与@主人流水审计</h1>
+          <p class="desc">全透明如实记录双子星在 B 站执行的所有真实操作：何时发了弹幕、在哪个视频评论区说了什么、带了什么 @，回执状态全追踪。</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-action" onclick="loadStatus()">🔄 刷新流水</button>
+          <button class="btn-action" onclick="clearAuditLogs()">清空流水</button>
         </div>
       </div>
-      <div class="status-card">
-        <div class="avatar-box">
-          <img id="userFace" src="/images/Gemini猫娘_闪闪头像_水手服特写.png" alt="闪闪头像">
-        </div>
-        <div class="info-fields">
-          <div>
-            <div class="field-label">当前登录昵称</div>
-            <div id="userName" class="field-val">检测中...</div>
-          </div>
-          <div>
-            <div class="field-label">用户 UID</div>
-            <div id="userDede" class="field-val">-</div>
-          </div>
-          <div>
-            <div class="field-label">硬币数</div>
-            <div id="userCoin" class="field-val">-</div>
-          </div>
-          <div>
-            <div class="field-label">大会员状态</div>
-            <div id="userVip" class="field-val">-</div>
-          </div>
-          <div>
-            <div class="field-label">仿生精力值</div>
-            <div id="userStamina" class="field-val" style="color:#10b981;">100 / 100</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="section-block">
-        <div class="section-title">B站手机扫码登录 / 换登账号</div>
-        <p class="form-hint" style="margin-bottom: 16px;">点击下方按钮生成登录二维码，使用手机 B 站 App 扫一扫即可安全授权登录。</p>
-        <button class="btn-save-light" onclick="requestQrCode()">生成 / 刷新二维码</button>
-        <div id="qrBox" style="margin-top: 16px; display: none; align-items: center; gap: 20px;">
-          <img id="qrImg" src="" style="width: 160px; height: 160px; border: 1px solid #ddd; border-radius: 8px;">
-          <div>
-            <div id="qrTip" style="font-size: 14px; font-weight: 600; color: #111827;">请打开哔哩哔哩手机客户端扫码</div>
-            <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 6px;">扫码成功后系统将自动保存安全凭证并接管推荐流</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="section-block">
-        <div class="section-title">AstrBot 机器人主动消息限制联动</div>
-        <p class="form-hint" style="margin-bottom: 14px;">已连接本机 AstrBot 主动消息会话数据。当主动发言未回复次数达到上限时将触发防打扰限制，可随时在此一键解除限制并恢复发言。</p>
-        <div style="display:flex; align-items:center; gap:12px;">
-          <button class="btn-save-light" onclick="resetAstrBotLimits()">✨ 立即全部清零限制</button>
-          <button class="btn-save-light" onclick="switchTab('tab-astrbot')">⚙️ 查看会话详情与管理</button>
-        </div>
-      </div>
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th style="width:140px;">操作时间</th>
+            <th style="width:120px;">类型</th>
+            <th>目标对象 (视频/用户)</th>
+            <th>实际发送内容</th>
+            <th style="width:90px;">状态</th>
+            <th>官方回执细节</th>
+          </tr>
+        </thead>
+        <tbody id="auditTableBody">
+          <!-- 动态加载审计行 -->
+        </tbody>
+      </table>
     </div>
 
-    <!-- Tab 3: 闪闪立绘衣橱 -->
-    <div id="tab-wardrobe" class="tab-view">
+    <!-- Tab 3: 站内信与@互动测试 (解决痛点 3) -->
+    <div id="tab-messages" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>闪闪专属立绘衣橱</h1>
-          <p class="desc">包含水手校服、原版常服与蓝白女仆装的高清立绘与多角度三视图设计图纸。</p>
+          <h1>💬 站内信与@互动中枢</h1>
+          <p class="desc">解决站内信连通性与“谁 @ 了我”通知监听：支持一键向主人测试发送私信、查看会话历史与防拦截指引。</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-action" onclick="refreshMessages()">🔄 刷新通知与私信</button>
         </div>
       </div>
-      <div id="galleryContainer" class="gallery-grid">
-        <!-- 动态加载立绘卡片 -->
+
+      <!-- 发送私信测试 -->
+      <div class="pm-box">
+        <h3 style="font-size:15px; margin-bottom:12px; color:#111827;">✉️ 向主人 B 站账号发送一条测试私信</h3>
+        <div class="form-group">
+          <label>接收者 B站 UID (主人的 UID):</label>
+          <input type="number" id="testPmUid" class="form-control" style="max-width:300px;" placeholder="例如: 12345678">
+        </div>
+        <div class="form-group">
+          <label>私信内容:</label>
+          <input type="text" id="testPmText" class="form-control" value="🐾 主人在吗喵？这是赛博猫娘来自控制中心的连通性测试！收到请摸头~ ✨">
+        </div>
+        <button class="btn-action btn-primary" onclick="sendTestPm()">🚀 立即发送私信测试</button>
+        <span id="pmSendStatus" style="margin-left:12px; font-size:13px; font-weight:600;"></span>
+
+        <div class="notice-card">
+          <strong>💡 为什么你之前没收到私信？（B站官方风控防拦截指南）：</strong><br>
+          1. <strong>未互相关注拦截</strong>：B 站官方默认开启了“仅接收互关好友私信”或“折叠未关注人消息”。如果猫娘机器人账号与你的账号<strong>互不关注</strong>，发送的私信会直接被塞进“未关注人消息”折叠盒，甚至被 B 站拦截阻断！请务必确保双方在 B 站<strong>互相关注</strong>！<br>
+          2. <strong>阈值触发机制</strong>：系统默认仅在质检到 &ge; 8.5 分的宝藏视频时才会向主人推送私信推荐。您可以在此处随时手动点击测试验证连通性！
+        </div>
+      </div>
+
+      <!-- 谁 @ 了我 -->
+      <div class="pm-box" style="margin-top:20px;">
+        <h3 style="font-size:15px; margin-bottom:12px; color:#111827;">🔔 B站通知中心：谁在视频/评论区 @ 了我？</h3>
+        <div id="atNotificationsList" style="font-size:13px; color:#4b5563;">
+          点击上方“刷新通知与私信”拉取 B 站谁 @ 了猫娘...
+        </div>
+      </div>
+
+      <!-- 私信会话列表 -->
+      <div class="pm-box" style="margin-top:20px;">
+        <h3 style="font-size:15px; margin-bottom:12px; color:#111827;">📫 最近的私信会话列表</h3>
+        <div id="sessionsList" style="font-size:13px; color:#4b5563;">
+          正在同步私信会话...
+        </div>
       </div>
     </div>
 
-    <!-- Tab 4: 晨思晚读手记 -->
+    <!-- Tab 4: 巡航与即时召唤 -->
+    <div id="tab-cruise" class="tab-view">
+      <div class="view-header">
+        <div class="title-block">
+          <h1>🚀 巡航与即时召唤</h1>
+          <p class="desc">实时召唤双子星巡航 B 站动态流，查看底层控制台实时瀑布流日志。</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪巡航</button>
+        </div>
+      </div>
+      <div class="console-box" id="consoleLog">等待召唤中... 点击右上角“立即派闪闪巡航”开启。</div>
+    </div>
+
+    <!-- Tab 5: 晨思晚读手记 -->
     <div id="tab-journals" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>晨思晚读手记</h1>
-          <p class="desc">闪闪每日早晚自动为你精选生成的两本观察手记，已安全归档至本地 <code>docs/journals/</code>。</p>
+          <h1>📝 晨思晚读手记与流水台账</h1>
+          <p class="desc">包含每日自动归档的晨思手记、晚读宝藏手记以及《互动操作审计流水》。</p>
         </div>
         <div class="header-actions">
-          <button class="btn-action-top" onclick="openJournalDir()">打开手记目录</button>
-          <button class="btn-action-top" onclick="triggerMorning()">立即生成晨思</button>
-          <button class="btn-action-top" onclick="triggerEvening()">立即生成晚读</button>
+          <button class="btn-action" onclick="triggerMorning()">生成今日晨思</button>
+          <button class="btn-action" onclick="triggerEvening()">生成今日晚读</button>
         </div>
       </div>
       <div id="journalsList">
@@ -1139,61 +884,60 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Tab 5: 巡航与即时召唤 -->
-    <div id="tab-cruise" class="tab-view">
+    <!-- Tab 6: 立绘衣橱 -->
+    <div id="tab-wardrobe" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>实时巡航与即时召唤</h1>
-          <p class="desc">随时召唤闪闪出击，巡航 B 站热门推荐流，使用 Gemini 3.8 Flash 读取 CC 字幕并打分。</p>
-        </div>
-        <div class="header-actions">
-          <button class="btn-action-top" style="background:#111827; color:#fff;" onclick="triggerCruise()">🚀 立即派闪闪巡航</button>
+          <h1>👗 双子星专属立绘衣橱</h1>
+          <p class="desc">包含水手校服、经典蓝白女仆装与原版常服的高清正面透明立绘与三视图设定。</p>
         </div>
       </div>
-      <div class="section-title">巡航实时流输出</div>
-      <div id="consoleLog" class="console-box">等待召唤中... 点击右上角“立即派闪闪巡航”开启。</div>
+      <div id="galleryContainer" class="gallery-grid"></div>
     </div>
 
-    <!-- Tab 6: AstrBot 主动消息限制管理 -->
-    <div id="tab-astrbot" class="tab-view">
+    <!-- Tab 7: 系统与人设配置 -->
+    <div id="tab-gemini" class="tab-view">
       <div class="view-header">
         <div class="title-block">
-          <h1>AstrBot 主动消息限制管理</h1>
-          <p class="desc">实时监控与重置 AstrBot 机器人的私聊/群聊主动消息未回复计数（防打扰限制）。当连续未回复次数达上限时（当前默认 4 次），主动消息会自动暂停；点击清零即可立即解除熔断并恢复主动发信。</p>
+          <h1>⚙️ 系统参数与主人配置</h1>
+          <p class="desc">设置伴生猫娘身份、对主人的称呼、主人 UID（用于评论区 @ 与发私信）、巡航关注分区与偏向词。</p>
         </div>
         <div class="header-actions">
-          <button class="btn-action-top" onclick="loadAstrBotStatus()" style="background:#f3f4f6; color:#374151; border:1px solid #d1d5db;">🔄 刷新数据</button>
-          <button class="btn-action-top" onclick="resetAstrBotLimits()" style="background:#111827; color:#ffffff;">✨ 一键全部清零</button>
+          <button class="btn-action btn-primary" onclick="saveFullConfig()">💾 保存配置</button>
         </div>
       </div>
-
-      <!-- 概览指标行 -->
-      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:14px; margin-bottom:20px;">
-        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
-          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">AstrBot 进程状态</div>
-          <div id="astrbotProcessStatus" style="font-size:18px; font-weight:700; color:#10b981; display:flex; align-items:center; gap:6px;">
-            <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#10b981;"></span> 检测中...
-          </div>
+      <div class="pm-box">
+        <div class="form-group">
+          <label>伴生猫娘角色名 (默认: 闪闪):</label>
+          <input type="text" id="cfgRoleName" class="form-control" style="max-width:300px;" placeholder="例如: 闪闪">
         </div>
-        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
-          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">监控会话总数</div>
-          <div id="astrbotTotalSessions" style="font-size:20px; font-weight:700; color:var(--text-main);">0</div>
+        <div class="form-group">
+          <label>猫娘自称 (例如: 我、人家、咱、闪闪):</label>
+          <input type="text" id="cfgSelfName" class="form-control" style="max-width:300px;" placeholder="例如: 我">
         </div>
-        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
-          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">限制触发状态</div>
-          <div id="astrbotLimitedSessions" style="font-size:18px; font-weight:700; color:#10b981;">0 个受限</div>
+        <div class="form-group">
+          <label>对主人的尊称 (例如: 主人、笨蛋主人、观察者大人):</label>
+          <input type="text" id="cfgCallMaster" class="form-control" style="max-width:300px;" placeholder="例如: 主人">
         </div>
-        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:10px; padding:16px;">
-          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:4px;">未回复暂停阈值</div>
-          <div id="astrbotMaxUnanswered" style="font-size:20px; font-weight:700; color:var(--text-main);">4 次</div>
+        <div class="form-group">
+          <label>主人的 B站 UID (必填，用于在评论区精准 @主人 及发送私信):</label>
+          <input type="number" id="cfgMasterUid" class="form-control" style="max-width:300px;" placeholder="例如: 12345678">
         </div>
-      </div>
-
-      <!-- 会话卡片列表 -->
-      <div class="section-block" style="border-top:none; margin-top:0; padding-top:0;">
-        <div class="section-title" style="margin-bottom:12px;">会话主动消息计数清单</div>
-        <div id="astrbotSessionsList" style="display:flex; flex-direction:column; gap:10px;">
-          <div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">正在加载 AstrBot 会话数据...</div>
+        <div class="form-group">
+          <label>主人自定义昵称 (用于日志与手记输出):</label>
+          <input type="text" id="cfgMasterName" class="form-control" style="max-width:300px;" placeholder="例如: 主人">
+        </div>
+        <div class="form-group">
+          <label>触发在评论区 @主人的硬核神作分数阈值 (默认 8.0):</label>
+          <input type="number" step="0.1" id="cfgAtThreshold" class="form-control" style="max-width:300px;">
+        </div>
+        <div class="form-group">
+          <label>雷达重点倾向词 (英文或中文逗号隔开):</label>
+          <input type="text" id="cfgKeywordsPrefer" class="form-control">
+        </div>
+        <div class="form-group">
+          <label>负向屏蔽词 (营销号/洗稿过滤，英文或中文逗号隔开):</label>
+          <input type="text" id="cfgKeywordsBlacklist" class="form-control">
         </div>
       </div>
     </div>
@@ -1201,12 +945,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </main>
 </div>
 
-<!-- 吐司通知条 -->
 <div id="toast" class="toast">操作成功</div>
 
 <script>
   let currentConfig = {};
-  let qrPollTimer = null;
 
   function showToast(msg) {
     const t = document.getElementById('toast');
@@ -1218,427 +960,393 @@ INDEX_HTML = r"""<!DOCTYPE html>
   function switchTab(tabId) {
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-view').forEach(el => el.classList.remove('active'));
-    
-    // 高亮菜单
+
     const items = document.querySelectorAll('.nav-item');
-    if (tabId === 'tab-gemini') items[0].classList.add('active');
-    else if (tabId === 'tab-account') items[1].classList.add('active');
-    else if (tabId === 'tab-wardrobe') items[2].classList.add('active');
-    else if (tabId === 'tab-journals') items[3].classList.add('active');
-    else if (tabId === 'tab-cruise') items[4].classList.add('active');
-    else if (tabId === 'tab-astrbot') items[5].classList.add('active');
+    if (tabId === 'tab-videos') items[0].classList.add('active');
+    else if (tabId === 'tab-audit') items[1].classList.add('active');
+    else if (tabId === 'tab-messages') { items[2].classList.add('active'); refreshMessages(); }
+    else if (tabId === 'tab-cruise') items[3].classList.add('active');
+    else if (tabId === 'tab-journals') { items[4].classList.add('active'); loadJournals(); }
+    else if (tabId === 'tab-wardrobe') { items[5].classList.add('active'); loadGallery(); }
+    else if (tabId === 'tab-gemini') items[6].classList.add('active');
 
     const target = document.getElementById(tabId);
     if (target) target.classList.add('active');
-
-    if (tabId === 'tab-wardrobe') loadGallery();
-    if (tabId === 'tab-journals') loadJournals();
-    if (tabId === 'tab-astrbot') loadAstrBotStatus();
   }
 
-  // 计算字符与字节
-  const personaTextarea = document.getElementById('personaContent');
-  personaTextarea.addEventListener('input', () => {
-    updateCharCount(personaTextarea.value);
-  });
-
-  function updateCharCount(text) {
-    const chars = text.length;
-    const bytes = new TextEncoder().encode(text).length;
-    document.getElementById('personaCount').innerText = `当前 ${chars.toLocaleString()} 字符 · ${bytes.toLocaleString()} 字节`;
-  }
-
-  // 加载系统状态与配置
   async function loadStatus() {
     try {
       const res = await fetch('/api/status');
       const data = await res.json();
       currentConfig = data.config || {};
 
-      // 填充她是
-      const prof = currentConfig.profile || {};
-      document.getElementById('roleName').value = prof.role_name || '闪闪';
-      document.getElementById('callMaster').value = prof.call_master || '主人';
-      document.getElementById('selfName').value = prof.self_name || '人家';
+      // 顶部指标
+      document.getElementById('statWatched').innerText = data.watched_count || (data.recent ? data.recent.length : 0);
+      document.getElementById('statTreasures').innerText = data.treasures_count || 0;
+      document.getElementById('statInteractions').innerText = (data.activity_logs ? data.activity_logs.length : 0) + ' 笔操作';
+      document.getElementById('statStamina').innerText = `${Math.round(data.stamina || 100)} / 100`;
 
-      // 填充你（主人）
-      document.getElementById('masterUid').value = prof.master_uid || 0;
-      document.getElementById('masterName').value = prof.master_name || '主人';
-      const prefs = currentConfig.preferences || {};
-      document.getElementById('keywordsPrefer').value = (prefs.keywords_prefer || []).join(', ');
-      document.getElementById('keywordsBlacklist').value = (prefs.blacklist_keywords || []).join(', ');
+      // 填充设置项 (若用户当前焦点正在输入框内，不覆写以避免打字被打断)
+      const isEditingConfig = document.activeElement && document.activeElement.closest && document.activeElement.closest('.pm-box');
+      if (!isEditingConfig) {
+        const prof = currentConfig.profile || {};
+        const elRole = document.getElementById('cfgRoleName');
+        if (elRole) elRole.value = prof.role_name || '闪闪';
+        const elSelf = document.getElementById('cfgSelfName');
+        if (elSelf) elSelf.value = prof.self_name || '我';
+        const elCall = document.getElementById('cfgCallMaster');
+        if (elCall) elCall.value = prof.call_master || '主人';
+        const elUid = document.getElementById('cfgMasterUid');
+        if (elUid) elUid.value = prof.master_uid || '';
+        const elName = document.getElementById('cfgMasterName');
+        if (elName) elName.value = prof.master_name || '主人';
 
-      // 填充作息
-      const sched = currentConfig.schedule || {};
-      document.getElementById('morningTime').value = sched.morning_journal_time || '09:30';
-      document.getElementById('eveningTime').value = sched.evening_journal_time || '22:30';
-      document.getElementById('maxVideos').value = sched.max_videos_per_cycle || 6;
-      document.getElementById('maxAt').value = sched.max_at_per_day || 3;
+        const pmUidEl = document.getElementById('testPmUid');
+        if (pmUidEl && !pmUidEl.value) {
+          pmUidEl.value = prof.master_uid || '';
+        }
 
-      // 账号卡片
-      const user = data.user || {};
-      if (user.is_login) {
-        document.getElementById('userName').innerText = user.uname || '已授权用户';
-        document.getElementById('userDede').innerText = user.mid || '-';
-        document.getElementById('userCoin').innerText = (user.money !== undefined) ? user.money : '正常';
-        document.getElementById('userVip').innerText = user.vip_type ? '年度大会员 ✨' : '正式会员';
-        if (user.face) document.getElementById('userFace').src = user.face;
-      } else {
-        document.getElementById('userName').innerText = '未登录 (免登录访客模式)';
-        document.getElementById('userDede').innerText = '访客 WBI';
-        document.getElementById('userCoin').innerText = '-';
-        document.getElementById('userVip').innerText = '免登录冲浪';
-        document.getElementById('userFace').src = '/images/Gemini猫娘_闪闪头像_水手服特写.png';
+        const inter = currentConfig.interaction || {};
+        const elThresh = document.getElementById('cfgAtThreshold');
+        if (elThresh) elThresh.value = inter.at_score_threshold || 8.0;
+
+        const prefs = currentConfig.preferences || {};
+        const elPref = document.getElementById('cfgKeywordsPrefer');
+        if (elPref) elPref.value = (prefs.keywords_prefer || []).join(', ');
+        const elBlack = document.getElementById('cfgKeywordsBlacklist');
+        if (elBlack) elBlack.value = (prefs.blacklist_keywords || []).join(', ');
       }
-      document.getElementById('userStamina').innerText = `${data.stamina || 100} / 100`;
+
+      // 渲染视频卡片流 (解决痛点 1)
+      renderVideoCards(data.recent || []);
+
+      // 渲染互动审计台账 (解决痛点 2)
+      renderAuditTable(data.activity_logs || []);
 
       // 巡航日志
       if (data.cruise_logs && data.cruise_logs.length > 0) {
-        document.getElementById('consoleLog').innerText = data.cruise_logs.join('\n');
+        document.getElementById('consoleLog').innerText = data.cruise_logs.join('\\n');
       }
     } catch(e) {
       console.error(e);
     }
   }
 
-  // 加载人设正文
-  async function loadPersona() {
-    try {
-      const res = await fetch('/api/persona');
-      const data = await res.json();
-      const txt = data.persona || '';
-      personaTextarea.value = txt;
-      updateCharCount(txt);
-    } catch(e) {
-      console.error(e);
+  function renderVideoCards(videos) {
+    const cont = document.getElementById('videoListContainer');
+    if (!videos || videos.length === 0) {
+      cont.innerHTML = '<div style="padding:40px; text-align:center; color:#9ca3af;">今日暂无质检视频记录，点击右上角“立即派闪闪出击巡航”开始探索！</div>';
+      return;
     }
-  }
 
-  // 保存身份
-  async function saveProfile() {
-    const role_name = document.getElementById('roleName').value.trim();
-    const call_master = document.getElementById('callMaster').value.trim();
-    const self_name = document.getElementById('selfName').value.trim();
-    const payload = {
-      config: {
-        profile: { role_name, call_master, self_name }
-      }
-    };
-    const res = await fetch('/api/save_config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const d = await res.json();
-    showToast(d.message || '基础身份保存成功！');
-  }
+    cont.innerHTML = videos.map(item => {
+      const score = item.score || 0;
+      let badgeClass = 'mid';
+      if (score >= 8.5) badgeClass = 'high';
+      else if (score <= 5.0) badgeClass = 'low';
 
-  // 注入人设
-  async function injectPersona() {
-    const txt = personaTextarea.value;
-    const res = await fetch('/api/save_persona', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ persona: txt })
-    });
-    const d = await res.json();
-    showToast(d.message || '人设已成功注入 docs/gemini_persona.md！');
-  }
-
-  // 保存主人偏好
-  async function saveMasterPrefs() {
-    const master_uid = parseInt(document.getElementById('masterUid').value) || 0;
-    const master_name = document.getElementById('masterName').value.trim();
-    const kw_prefer = document.getElementById('keywordsPrefer').value.split(',').map(s => s.trim()).filter(Boolean);
-    const kw_black = document.getElementById('keywordsBlacklist').value.split(',').map(s => s.trim()).filter(Boolean);
-
-    const payload = {
-      config: {
-        profile: { master_uid, master_name },
-        preferences: { keywords_prefer: kw_prefer, blacklist_keywords: kw_black }
-      }
-    };
-    const res = await fetch('/api/save_config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const d = await res.json();
-    showToast(d.message || '主人偏好保存成功！');
-  }
-
-  // 保存作息
-  async function saveSchedule() {
-    const morning = document.getElementById('morningTime').value.trim();
-    const evening = document.getElementById('eveningTime').value.trim();
-    const maxVideos = parseInt(document.getElementById('maxVideos').value) || 6;
-    const maxAt = parseInt(document.getElementById('maxAt').value) || 3;
-
-    const payload = {
-      config: {
-        schedule: {
-          morning_journal_time: morning,
-          evening_journal_time: evening,
-          max_videos_per_cycle: maxVideos,
-          max_at_per_day: maxAt
-        }
-      }
-    };
-    const res = await fetch('/api/save_config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const d = await res.json();
-    showToast(d.message || '作息风控已更新！');
-  }
-
-  // 快捷打开本地文件
-  async function openConfigFile() {
-    const res = await fetch('/api/open_config_file', { method: 'POST' });
-    showToast('已调起系统编辑器打开 config/hajimi_config.json');
-  }
-  async function openPersonaFile() {
-    const res = await fetch('/api/open_persona_file', { method: 'POST' });
-    showToast('已调起系统编辑器打开 docs/gemini_persona.md');
-  }
-  async function openJournalDir() {
-    await fetch('/api/open_folder', { method: 'POST' });
-    showToast('已在资源管理器中打开手记目录');
-  }
-
-  // 二维码扫码
-  async function requestQrCode() {
-    const box = document.getElementById('qrBox');
-    const tip = document.getElementById('qrTip');
-    tip.innerText = '正在向 B 站申请安全登录二维码...';
-    box.style.display = 'flex';
-
-    const res = await fetch('/api/qrcode');
-    const d = await res.json();
-    if (d.url && d.qrcode_key) {
-      if (d.img_b64) document.getElementById('qrImg').src = d.img_b64;
-      else document.getElementById('qrImg').src = `/api/qrcode_img?t=${Date.now()}`;
-      tip.innerText = '请打开哔哩哔哩手机客户端扫码';
-      if (qrPollTimer) clearInterval(qrPollTimer);
-      qrPollTimer = setInterval(async () => {
-        const pRes = await fetch(`/api/poll_login?key=${d.qrcode_key}`);
-        const pData = await pRes.json();
-        if (pData.code === 0) {
-          clearInterval(qrPollTimer);
-          tip.innerText = '🎉 授权登录成功！';
-          showToast('B站登录成功！已接管推荐流与专属互动权限');
-          loadStatus();
-        } else if (pData.code === 86038) {
-          clearInterval(qrPollTimer);
-          tip.innerText = '二维码已失效，请重新生成';
-        }
-      }, 2500);
-    }
-  }
-
-  // 加载立绘图鉴
-  async function loadGallery() {
-    const cont = document.getElementById('galleryContainer');
-    if (cont.children.length > 0) return;
-    try {
-      const res = await fetch('/api/gallery');
-      const list = await res.json();
-      cont.innerHTML = list.map(item => `
-        <div class="outfit-card" onclick="window.open('${item.url}', '_blank')">
-          <div class="outfit-preview">
-            <img src="${item.url}" alt="${item.title}" loading="lazy">
-          </div>
-          <div class="outfit-meta">
-            <div class="outfit-title">${item.title}</div>
-            <div class="outfit-desc">${item.desc}</div>
-          </div>
+      const sbUrl = item.storyboard_url || (item.bvid ? `/cache/storyboards/${item.bvid}_storyboard_strip.jpg` : '');
+      const stripHtml = sbUrl ? `
+        <div class="eval-visual-strip" title="点击可在新标签页查看5帧时序全景画卷">
+          <a href="${sbUrl}" target="_blank"><img src="${sbUrl}" loading="lazy" onerror="this.parentElement.parentElement.style.display='none'"></a>
+          <div class="strip-hint">5帧时序分镜雪碧图画卷 (覆盖10%~90%全片节奏) 🔍 点击放大</div>
         </div>
-      `).join('');
+      ` : '';
+
+      const visualCritiqueHtml = item.visual_critique ? `
+        <div class="eval-visual-critique"><strong>🎨 视觉画风与分镜点评:</strong> ${item.visual_critique}</div>
+      ` : '';
+
+      const highlightHtml = item.highlight ? `
+        <div class="eval-highlight"><strong>💡 核心干货亮点:</strong> ${item.highlight}</div>
+      ` : '';
+
+      const catCommentHtml = item.cat_comment ? `
+        <div class="eval-cat-comment"><strong>🐾 猫娘品鉴评语:</strong> ${item.cat_comment}</div>
+      ` : '';
+
+      return `
+        <div class="eval-card">
+          <div class="eval-header">
+            <a class="eval-title" href="https://www.bilibili.com/video/${item.bvid}" target="_blank">
+              📺 《${item.title || item.bvid}》 🔗
+            </a>
+            <span class="score-badge ${badgeClass}">★ ${score} 分 [${item.verdict || '品鉴完毕'}]</span>
+          </div>
+          <div class="eval-meta">
+            <span>UP主: <strong>${item.owner || '未知'}</strong></span> · 
+            <span>质检时间: ${item.time || '-'}</span> · 
+            <span>BV号: <code>${item.bvid}</code></span>
+            ${item.should_at ? ' · <span style="color:#059669; font-weight:700;">★ 已触发 @主人</span>' : ''}
+          </div>
+          ${stripHtml}
+          ${visualCritiqueHtml}
+          ${highlightHtml}
+          ${catCommentHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderAuditTable(logs) {
+    const tbody = document.getElementById('auditTableBody');
+    if (!logs || logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:#9ca3af;">暂无互动操作审计流水</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = logs.map(l => {
+      let typeBadge = 'badge-comment';
+      if (l.action_type.includes('弹幕')) typeBadge = 'badge-danmaku';
+      else if (l.action_type.includes('私信')) typeBadge = 'badge-pm';
+      else if (l.action_type.includes('抽帧')) typeBadge = 'badge-vision';
+
+      const statusBadge = (l.status === '成功') ? 'badge-success' : 'badge-fail';
+      return `
+        <tr>
+          <td><code style="font-size:12px;">${l.time}</code></td>
+          <td><span class="audit-badge ${typeBadge}">${l.action_type}</span></td>
+          <td><strong>${l.target || '-'}</strong></td>
+          <td style="max-width:340px; word-break:break-all;">${l.content || '-'}</td>
+          <td><span class="audit-badge ${statusBadge}">${l.status}</span></td>
+          <td style="font-size:12px; color:#6b7280;">${l.details || '-'}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  async function sendTestPm() {
+    const uid = document.getElementById('testPmUid').value;
+    const content = document.getElementById('testPmText').value;
+    const statusSpan = document.getElementById('pmSendStatus');
+
+    if (!uid) {
+      showToast('请先输入主人的 UID！');
+      return;
+    }
+
+    statusSpan.style.color = '#4b5563';
+    statusSpan.innerText = '正在发送私信...';
+
+    try {
+      const res = await fetch('/api/send_pm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ receiver_uid: parseInt(uid), content })
+      });
+      const data = await res.json();
+      if (data.success) {
+        statusSpan.style.color = '#059669';
+        statusSpan.innerText = '🎉 发送成功！请检查 B 站私信箱！';
+        showToast('私信已发送成功！');
+      } else {
+        statusSpan.style.color = '#dc2626';
+        statusSpan.innerText = `⚠ 失败: ${data.message} (错误码: ${data.code || '-'})`;
+        showToast('发送失败: ' + data.message);
+      }
+      loadStatus();
     } catch(e) {
-      console.error(e);
+      statusSpan.style.color = '#dc2626';
+      statusSpan.innerText = '网络异常: ' + e;
     }
   }
 
-  // 加载手记
+  async function refreshMessages() {
+    // 1. 获取 @我的消息
+    try {
+      const atRes = await fetch('/api/at_notifications');
+      const atData = await atRes.json();
+      const atCont = document.getElementById('atNotificationsList');
+      if (atData.items && atData.items.length > 0) {
+        atCont.innerHTML = atData.items.map(it => `
+          <div style="padding:10px; border-bottom:1px solid #e5e7eb;">
+            <strong>${it.user ? it.user.nickname : '用户'}</strong> 在 <code>${it.item ? it.item.subject_id : '动态/视频'}</code> 中 @ 了猫娘:
+            <div style="background:#f1f5f9; padding:6px 10px; border-radius:4px; margin-top:4px;">${it.item ? it.item.source_content : '-'}</div>
+          </div>
+        `).join('');
+      } else {
+        atCont.innerHTML = '<div style="color:#9ca3af; padding:8px 0;">目前暂无未读的 @我的通知（如果在 B 站评论区 @ 猫娘账号，这里即可捕获！）。</div>';
+      }
+    } catch(e) {}
+
+    // 2. 获取私信会话
+    try {
+      const sRes = await fetch('/api/sessions');
+      const sData = await sRes.json();
+      const sCont = document.getElementById('sessionsList');
+      if (sData.sessions && sData.sessions.length > 0) {
+        sCont.innerHTML = sData.sessions.map(s => {
+          let lastMsgTxt = '-';
+          try {
+            const parsed = JSON.parse(s.last_msg.content);
+            lastMsgTxt = parsed.content || JSON.stringify(parsed);
+          } catch(e) {
+            lastMsgTxt = s.last_msg ? s.last_msg.content : '-';
+          }
+          return `
+            <div style="padding:10px; border-bottom:1px solid #e5e7eb; display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <strong>会话对象 UID: ${s.talker_id}</strong>
+                <div style="font-size:12.5px; color:#4b5563; margin-top:3px;">最新消息: ${lastMsgTxt}</div>
+              </div>
+              <span style="font-size:11.5px; color:#9ca3af;">会话状态活跃</span>
+            </div>
+          `;
+        }).join('');
+      } else {
+        sCont.innerHTML = '<div style="color:#9ca3af; padding:8px 0;">暂无私信会话记录。</div>';
+      }
+    } catch(e) {}
+  }
+
+  async function triggerCruise() {
+    showToast('🚀 正在召唤闪闪出击巡航...');
+    try {
+      const res = await fetch('/api/cruise', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+      switchTab('tab-cruise');
+      setTimeout(loadStatus, 4000);
+    } catch(e) {
+      showToast('调用失败: ' + e);
+    }
+  }
+
+  async function triggerMorning() {
+    showToast('正在生成晨思手记...');
+    const res = await fetch('/api/morning_journal', { method: 'POST' });
+    const data = await res.json();
+    showToast(data.message);
+    loadJournals();
+  }
+
+  async function triggerEvening() {
+    showToast('正在生成晚读手记...');
+    const res = await fetch('/api/evening_journal', { method: 'POST' });
+    const data = await res.json();
+    showToast(data.message);
+    loadJournals();
+  }
+
+  async function clearAuditLogs() {
+    if (!confirm('确定清空当前全部互动操作审计流水吗？')) return;
+    await fetch('/api/clear_audit', { method: 'POST' });
+    showToast('审计流水已清空');
+    loadStatus();
+  }
+
+  async function saveFullConfig() {
+    const roleName = (document.getElementById('cfgRoleName')?.value || '闪闪').trim();
+    const selfName = (document.getElementById('cfgSelfName')?.value || '我').trim();
+    const callMaster = (document.getElementById('cfgCallMaster')?.value || '主人').trim();
+    const uid = parseInt(document.getElementById('cfgMasterUid').value) || 0;
+    const name = (document.getElementById('cfgMasterName').value || '主人').trim();
+    const atThresh = parseFloat(document.getElementById('cfgAtThreshold').value) || 8.0;
+    const prefStr = document.getElementById('cfgKeywordsPrefer').value;
+    const blStr = document.getElementById('cfgKeywordsBlacklist').value;
+
+    const payload = {
+      config: {
+        profile: {
+          role_name: roleName,
+          self_name: selfName,
+          call_master: callMaster,
+          master_uid: uid,
+          master_name: name
+        },
+        interaction: { at_score_threshold: atThresh },
+        preferences: {
+          keywords_prefer: prefStr.split(/[,，]/).map(s => s.trim()).filter(Boolean),
+          blacklist_keywords: blStr.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+        }
+      }
+    };
+
+    try {
+      const res = await fetch('/api/save_config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      showToast(data.message || '配置已成功保存并即时生效！');
+      loadStatus();
+    } catch(e) {
+      showToast('保存失败: ' + e);
+    }
+  }
+
   async function loadJournals() {
-    const cont = document.getElementById('journalsList');
     try {
       const res = await fetch('/api/journals');
       const data = await res.json();
+      const cont = document.getElementById('journalsList');
       if (!data.journals || data.journals.length === 0) {
-        cont.innerHTML = '<div style="padding:20px; color:var(--text-muted);">暂无已归档手记，可点击右上角“立即生成晨思/晚读”或等待作息定时写入。</div>';
+        cont.innerHTML = '<div style="color:#9ca3af; padding:20px;">暂无归档手记</div>';
         return;
       }
       cont.innerHTML = data.journals.map(j => `
-        <div class="journal-item" onclick="openJournalDir()">
-          <div class="journal-head">
-            <div class="journal-title">📄 ${j.filename}</div>
-            <div class="journal-time">${j.mtime} · ${(j.size / 1024).toFixed(1)} KB</div>
+        <div class="eval-card" style="padding:14px 18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong>📄 ${j.filename}</strong>
+            <span style="font-size:12px; color:#6b7280;">${j.mtime}</span>
           </div>
-          <div class="journal-snippet">${j.snippet}...</div>
+          <div style="font-size:12.5px; color:#4b5563; margin-top:8px; line-height:1.5;">${j.snippet}...</div>
         </div>
       `).join('');
-    } catch(e) {
-      console.error(e);
-    }
+    } catch(e) {}
   }
 
-  // 触发巡航与手记
-  async function triggerCruise() {
-    showToast('已唤醒闪闪出击巡航！请在下方控制台观察动态');
-    await fetch('/api/cruise', { method: 'POST' });
-    pollCruiseLogs();
-  }
-  async function triggerMorning() {
-    showToast('闪闪正在撰写《晨思手记》...');
-    const res = await fetch('/api/morning_journal', { method: 'POST' });
-    const d = await res.json();
-    if (d.success) { showToast('《晨思手记》撰写完成并已归档！'); loadJournals(); }
-  }
-  async function triggerEvening() {
-    showToast('闪闪正在撰写《晚读手记》...');
-    const res = await fetch('/api/evening_journal', { method: 'POST' });
-    const d = await res.json();
-    if (d.success) { showToast('《晚读手记》撰写完成并已归档！'); loadJournals(); }
-  }
-
-  function pollCruiseLogs() {
-    const t = setInterval(async () => {
-      const res = await fetch('/api/status');
-      const d = await res.json();
-      if (d.cruise_logs && d.cruise_logs.length > 0) {
-        const consoleEl = document.getElementById('consoleLog');
-        consoleEl.innerText = d.cruise_logs.join('\n');
-        consoleEl.scrollTop = consoleEl.scrollHeight;
-      }
-      if (!d.is_cruising) clearInterval(t);
-    }, 2000);
+  async function loadGallery() {
+    const list = [
+      { name: "Gemini猫娘_双形态全景立绘_星空与校园.jpg", title: "双形态全景概念大图", desc: "星空战袍与青春校园对比" },
+      { name: "Gemini猫娘_赛博猫娘主视觉海报.jpg", title: "官方概念主海报", desc: "标志性异色双瞳与猫耳耳机" },
+      { name: "Gemini猫娘_伴生羁绊概念全景.jpg", title: "伴生羁绊概念插画", desc: "夜间终端桌前赛博守候" },
+      { name: "Gemini猫娘_女仆装_正面立绘_透明底.png", title: "经典蓝白科技女仆装", desc: "姐姐卡拉深研守护战袍" },
+      { name: "Gemini猫娘_水手校服_正面立绘_透明底.png", title: "青春水手校服", desc: "妹妹闪闪冲浪常驻战袍" },
+      { name: "Gemini猫娘_原版常服_正面立绘_透明底.png", title: "深海蓝极客连帽衫", desc: "居家写代码排错常服" }
+    ];
+    document.getElementById('galleryContainer').innerHTML = list.map(item => `
+      <div class="outfit-card">
+        <div class="outfit-preview">
+          <img src="/images/${item.name}" alt="${item.title}">
+        </div>
+        <div class="outfit-meta">
+          <div class="outfit-title">${item.title}</div>
+          <div class="outfit-desc">${item.desc}</div>
+        </div>
+      </div>
+    `).join('');
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  async function loadAstrBotStatus() {
-    try {
-      const res = await fetch('/api/astrbot_status');
-      const data = await res.json();
-      if (!data.installed) {
-        document.getElementById('astrbotSessionsList').innerHTML = `<div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">${data.message}</div>`;
-        return;
-      }
-      document.getElementById('astrbotTotalSessions').textContent = data.total_sessions;
-      document.getElementById('astrbotMaxUnanswered').textContent = data.max_unanswered + ' 次';
-
-      const limitedEl = document.getElementById('astrbotLimitedSessions');
-      if (data.limited_sessions > 0) {
-        limitedEl.innerHTML = `<span style="color:#ef4444;">${data.limited_sessions} 个已暂停</span>`;
-      } else {
-        limitedEl.innerHTML = `<span style="color:#10b981;">全部畅聊中 (0 受限)</span>`;
-      }
-
-      const procEl = document.getElementById('astrbotProcessStatus');
-      if (data.astrbot_running) {
-        procEl.innerHTML = `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#10b981;"></span> 运行中`;
-      } else {
-        procEl.innerHTML = `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af;"></span> 离线 / 待启动`;
-      }
-
-      const container = document.getElementById('astrbotSessionsList');
-      if (!data.sessions || data.sessions.length === 0) {
-        container.innerHTML = `<div style="padding:20px; text-align:center; color:#6b7280; font-size:13.5px;">暂无会话数据</div>`;
-        return;
-      }
-
-      container.innerHTML = data.sessions.map(s => {
-        const isLimited = s.is_limited;
-        const count = s.unanswered_count;
-        const max = s.max_unanswered;
-        const statusBadge = isLimited 
-          ? `<span style="background:#fee2e2; color:#b91c1c; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">已达上限 (${count}/${max}) 熔断中</span>`
-          : (count > 0 
-            ? `<span style="background:#fef3c7; color:#b45309; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">待回复 (${count}/${max})</span>`
-            : `<span style="background:#d1fae5; color:#065f46; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:999px;">正常畅聊 (0/${max})</span>`);
-
-        return `
-          <div style="background:#ffffff; border:1px solid ${isLimited ? '#fca5a5' : 'var(--border-color)'}; border-radius:9px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px;">
-            <div style="flex:1; min-width:0;">
-              <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;">
-                <span style="font-weight:600; font-size:14px; color:var(--text-main);">${escapeHtml(s.name)}</span>
-                ${statusBadge}
-              </div>
-              <div style="font-size:12px; color:var(--text-muted); font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                ${escapeHtml(s.session_id)}
-              </div>
-              <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
-                最近活动: ${escapeHtml(s.last_message_time)} ｜ 平台账号: ${escapeHtml(s.self_id)}
-              </div>
-            </div>
-            <button class="btn-save-light" style="padding:6px 14px; font-size:12.5px; flex-shrink:0;" onclick="resetAstrBotLimits('${escapeHtml(s.session_id)}')">清零此会话</button>
-          </div>
-        `;
-      }).join('');
-    } catch (err) {
-      showToast('获取 AstrBot 状态失败: ' + err.message);
-    }
-  }
-
-  async function resetAstrBotLimits(sessionId = null) {
-    try {
-      showToast('正在重置主动消息未回复计数...');
-      const res = await fetch('/api/astrbot_reset_limit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId })
-      });
-      const result = await res.json();
-      if (result.success) {
-        showToast(result.message);
-        await loadAstrBotStatus();
-      } else {
-        showToast('清零失败: ' + result.message);
-      }
-    } catch (err) {
-      showToast('请求异常: ' + err.message);
-    }
-  }
-
-  // 初始化
-  window.addEventListener('DOMContentLoaded', () => {
-    loadStatus();
-    loadPersona();
-    loadAstrBotStatus();
-  });
+  // 初始加载与定时轮询
+  loadStatus();
+  setInterval(loadStatus, 5000);
 </script>
-
 </body>
 </html>
 """
 
 
-def run_server():
-    server_address = ("0.0.0.0", PORT)
-    httpd = ThreadingHTTPServer(server_address, HajimiHandler)
-    httpd.daemon_threads = True
-    print(f"============================================================")
-    print(f"🐾 赛博养Gemini · 伴生控制中心已启动 (多线程高并发模式)！")
-    print(f"🔗 本地 Web 访问入口: http://127.0.0.1:{PORT}/")
-    print(f"🔗 Sidecar 辅助抽屉入口: sidecar://cyber-hajimi/panel/")
-    print(f"============================================================")
+def run_server(port=8765):
+    server_address = ("", port)
+    httpd = HTTPServer(server_address, HajimiWebHandler)
+    print(f"\n=======================================================")
+    print(f"🐾 赛博养Gemini · 全息监控与伴生中枢已启动！")
+    print(f"👉 独立浏览器大屏访问: http://localhost:{port}")
+    print(f"👉 Antigravity Sidecar: 深度适配原生抽屉视窗")
+    print(f"=======================================================\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[INFO] 控制中心已停止。")
+        print("\n[WebUI] 控制台服务已安全停止。")
 
 
 if __name__ == "__main__":
-    if "--no-browser" not in sys.argv and not os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT"):
-        threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(f"http://127.0.0.1:{PORT}/")), daemon=True).start()
-    run_server()
+    port = 8765
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            pass
+    run_server(port)

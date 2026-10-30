@@ -12,12 +12,22 @@ dist/
 build/
 
 # Cyber-Hajimi Local Cache & Personal Data
+config/hajimi_config.local.json
 config/hajimi_state.json
 images/qrcode_login.png
-docs/journals/哈基米手记_20*.md
-docs/journals/晨思手记_20*.md
-docs/journals/晚读手记_20*.md
+docs/journals/
+cache/
+build_*/
+*.mp3
 *.log
+scripts/test_*.py
+scripts/build_*.py
+scripts/check_*.py
+scripts/rebuild_*.py
+scripts/repack_*.py
+scripts/verify_*.py
+scripts/experiment_*.py
+scripts/temp_*.py
 
 # Antigravity & IDE
 .gemini/

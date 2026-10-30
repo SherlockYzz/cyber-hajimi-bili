@@ -19,7 +19,12 @@ import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
+import re
+import io
+import zlib
+from collections import Counter
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -36,11 +41,17 @@ MIXIN_KEY_ENC_TAB = [
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SRC_DIR.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.json"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.local.json"
 QRCODE_PATH = PROJECT_ROOT / "images" / "qrcode_login.png"
 JOURNALS_DIR = PROJECT_ROOT / "docs" / "journals"
+CACHE_DIR = PROJECT_ROOT / "cache"
+COVERS_DIR = CACHE_DIR / "covers"
+STORYBOARDS_DIR = CACHE_DIR / "storyboards"
 
 JOURNALS_DIR.mkdir(parents=True, exist_ok=True)
 QRCODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+COVERS_DIR.mkdir(parents=True, exist_ok=True)
+STORYBOARDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_mixin_key(orig: str) -> str:
@@ -67,18 +78,56 @@ class BiliHajimiCore:
         self._ensure_buvid()
 
     def _load_config(self) -> dict:
+        cfg = {}
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
             except Exception as e:
                 print(f"[Core] 读取配置失败: {e}")
-        return {}
+        # 如果存在本地优先配置 (如登录态及本地专属个性化)，合并本地信息
+        if LOCAL_CONFIG_PATH.exists():
+            try:
+                with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    local_cfg = json.load(f)
+                if local_cfg.get("auth"):
+                    cfg["auth"] = local_cfg["auth"]
+                if local_cfg.get("profile"):
+                    for k, v in local_cfg["profile"].items():
+                        if v:
+                            cfg.setdefault("profile", {})[k] = v
+                if local_cfg.get("preferences"):
+                    cfg["preferences"] = local_cfg["preferences"]
+                if local_cfg.get("interaction"):
+                    cfg["interaction"] = local_cfg["interaction"]
+            except Exception:
+                pass
+        return cfg
 
     def save_config(self):
         try:
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=2)
+            # 1. 如果存在 local 配置，则将完整设置（含真实凭据与UID）持久化写入 local.json (已 gitignore)
+            if LOCAL_CONFIG_PATH.exists():
+                with open(LOCAL_CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(self.config, f, ensure_ascii=False, indent=2)
+                # 2. 对公开的主配置进行脱敏保存，杜绝任何个人凭据泄露
+                import copy
+                clean_cfg = copy.deepcopy(self.config)
+                clean_cfg["auth"] = {
+                    "dedeuserid": "",
+                    "sessdata": "",
+                    "bili_jct": "",
+                    "buvid3": "",
+                    "buvid4": ""
+                }
+                if "profile" in clean_cfg:
+                    clean_cfg["profile"]["master_uid"] = 0
+                    clean_cfg["profile"]["master_name"] = "主人"
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(clean_cfg, f, ensure_ascii=False, indent=2)
+            else:
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Core] 保存配置失败: {e}")
 
@@ -404,8 +453,178 @@ class BiliHajimiCore:
             }
         return {}
 
+    # ==================== 多模态视觉与时序分镜感知 ====================
+    def download_video_cover(self, bvid: str, pic_url: str) -> str:
+        """下载视频高清原画封面至本地缓存"""
+        if not pic_url:
+            return ""
+        if pic_url.startswith("//"):
+            pic_url = "https:" + pic_url
+        ext = os.path.splitext(urllib.parse.urlparse(pic_url).path)[-1] or ".jpg"
+        save_path = COVERS_DIR / f"{bvid}{ext}"
+        if save_path.exists() and save_path.stat().st_size > 1000:
+            return str(save_path.resolve())
+
+        try:
+            req = urllib.request.Request(pic_url, headers={"User-Agent": self.user_agent, "Referer": "https://www.bilibili.com/"})
+            with urllib.request.urlopen(req, timeout=10) as res:
+                content = res.read()
+                if len(content) > 1000:
+                    with open(save_path, "wb") as f:
+                        f.write(content)
+                    return str(save_path.resolve())
+        except Exception as e:
+            print(f"[Core] 下载封面失败 [{bvid}]: {e}")
+        return ""
+
+    def get_video_storyboard_strip(self, bvid: str, cid: int, target_frames: int = 5) -> str:
+        """
+        利用 B 站底层的 VideoShot / Storyboard 雪碧图，
+        按时间轴均匀抽取 target_frames 个时序关键分镜，横向拼接为时序画卷 (Storyboard Strip)
+        """
+        save_path = STORYBOARDS_DIR / f"{bvid}_storyboard_strip.jpg"
+        if save_path.exists() and save_path.stat().st_size > 2000:
+            return str(save_path.resolve())
+
+        url = "https://api.bilibili.com/x/player/videoshot"
+        resp = self._request(url, params={"bvid": bvid, "cid": cid, "index": 1})
+        if resp.get("code") != 0 or not resp.get("data"):
+            return ""
+
+        data = resp.get("data", {})
+        images = data.get("image", [])
+        if not images:
+            return ""
+
+        sprite_url = images[0]
+        if sprite_url.startswith("//"):
+            sprite_url = "http:" + sprite_url
+        elif sprite_url.startswith("https://bimp.hdslb.com"):
+            sprite_url = sprite_url.replace("https://", "http://")
+
+        try:
+            req = urllib.request.Request(sprite_url, headers={"User-Agent": self.user_agent, "Referer": "https://www.bilibili.com/"})
+            with urllib.request.urlopen(req, timeout=10) as res:
+                sprite_bytes = res.read()
+            sprite_img = Image.open(io.BytesIO(sprite_bytes))
+        except Exception:
+            try:
+                alt_url = sprite_url.replace("http://", "https://") if sprite_url.startswith("http://") else sprite_url.replace("https://", "http://")
+                req = urllib.request.Request(alt_url, headers={"User-Agent": self.user_agent, "Referer": "https://www.bilibili.com/"})
+                with urllib.request.urlopen(req, timeout=10) as res:
+                    sprite_bytes = res.read()
+                sprite_img = Image.open(io.BytesIO(sprite_bytes))
+            except Exception as e:
+                print(f"[Core] 下载分镜雪碧图失败 [{bvid}]: {e}")
+                return ""
+
+        img_x_len = data.get("img_x_len", 10)
+        img_y_len = data.get("img_y_len", 10)
+        img_x_size = data.get("img_x_size", 160)
+        img_y_size = data.get("img_y_size", 90)
+        index_list = data.get("index", [])
+        total_frames = len(index_list)
+        if total_frames <= 0:
+            # 动态嗅探雪碧图中的有效帧数，防止短视频尾部黑帧误采
+            valid_cnt = 0
+            max_possible = img_x_len * img_y_len
+            for idx in range(max_possible):
+                c = idx % img_x_len
+                r = idx // img_x_len
+                box = (c * img_x_size, r * img_y_size, (c + 1) * img_x_size, (r + 1) * img_y_size)
+                tile = sprite_img.crop(box)
+                stat = tile.resize((16, 9)).convert("L")
+                if sum(stat.getdata()) / 144.0 > 1.0:
+                    valid_cnt += 1
+                else:
+                    break
+            total_frames = valid_cnt if valid_cnt > 0 else (img_x_len * img_y_len)
+
+        if total_frames <= 0:
+            return ""
+
+        # 均匀选取时序点: 如 [0.1, 0.3, 0.5, 0.7, 0.9]
+        if target_frames == 1:
+            points = [0.5]
+        else:
+            step = 1.0 / (target_frames + 1)
+            points = [step * (i + 1) for i in range(target_frames)]
+
+        sampled_indices = [int(p * (total_frames - 1)) for p in points]
+
+        # 拼接画卷 (单元格放大为 240x135 提升 Gemini 视觉清晰度)
+        cell_w, cell_h = 240, 135
+        strip_img = Image.new("RGB", (cell_w * len(sampled_indices), cell_h + 24), color=(18, 18, 28))
+        draw = ImageDraw.Draw(strip_img)
+
+        try:
+            font = ImageFont.truetype("arialbd.ttf", 14)
+        except Exception:
+            font = ImageFont.load_default()
+
+        for idx, f_idx in enumerate(sampled_indices):
+            col = f_idx % img_x_len
+            row = f_idx // img_x_len
+            x1 = col * img_x_size
+            y1 = row * img_y_size
+            cropped = sprite_img.crop((x1, y1, x1 + img_x_size, y1 + img_y_size))
+            resized = cropped.resize((cell_w, cell_h), Image.Resampling.LANCZOS)
+            strip_img.paste(resized, (idx * cell_w, 0))
+
+            # 底部标注时序进度
+            sec = index_list[f_idx] if f_idx < len(index_list) else 0
+            m, s = divmod(sec, 60)
+            pct_label = f"[{int(points[idx]*100)}%] {m:02d}:{s:02d}"
+            draw.text((idx * cell_w + 12, cell_h + 4), pct_label, font=font, fill=(180, 200, 255))
+
+        strip_img.save(save_path, quality=92)
+        return str(save_path.resolve())
+
+    def get_video_danmaku_insights(self, cid: int) -> dict:
+        """抓取并分析实时弹幕热力与高能点"""
+        url = f"https://api.bilibili.com/x/v1/dm/list.so?oid={cid}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+            with urllib.request.urlopen(req, timeout=8) as res:
+                raw = res.read()
+            try:
+                xml_text = zlib.decompress(raw, -zlib.MAX_WBITS).decode("utf-8", errors="replace")
+            except Exception:
+                xml_text = zlib.decompress(raw).decode("utf-8", errors="replace")
+        except Exception:
+            return {}
+
+        matches = re.findall(r'<d p="([^,]+)[^>]*>([^<]+)</d>', xml_text)
+        if not matches:
+            return {"total_danmaku": 0}
+
+        # 统计时间区间 (15秒一个区间)
+        buckets = Counter(int(float(m[0]) // 15) * 15 for m in matches)
+        top_peaks = []
+        for sec, count in buckets.most_common(3):
+            m, s = divmod(sec, 60)
+            top_peaks.append(f"{m:02d}:{s:02d} ({count}条弹幕爆发)")
+
+        # 统计高频共鸣词
+        key_words = ["高能", "封神", "卧槽", "神仙", "原画", "泪目", "草", "燃", "鸡皮疙瘩", "太帅了", "好活", "双厨狂喜", "名场面"]
+        found_keywords = Counter()
+        for _, text in matches:
+            for kw in key_words:
+                if kw in text:
+                    found_keywords[kw] += 1
+
+        top_kw = [f"{k}({v}次)" for k, v in found_keywords.most_common(5) if v > 1]
+        sample_dm = [m[1].strip() for m in matches if len(m[1].strip()) >= 4][:8]
+
+        return {
+            "total_danmaku": len(matches),
+            "peak_intervals": top_peaks,
+            "hot_keywords": top_kw,
+            "sample_danmaku": sample_dm
+        }
+
     # ==================== 评论与互动 ====================
-    def post_comment(self, aid: int, message: str) -> dict:
+    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None) -> dict:
         csrf = self.config.get("auth", {}).get("bili_jct", "")
         if not csrf:
             return {"success": False, "message": "未登录或缺少 csrf 凭证"}
@@ -416,12 +635,217 @@ class BiliHajimiCore:
             "oid": aid,
             "message": message,
             "csrf": csrf,
+            "plat": 1,
         }
+        if at_name_to_mid:
+            payload["at_name_to_mid"] = json.dumps(at_name_to_mid, ensure_ascii=False)
+
         resp = self._request(url, method="POST", data=payload, headers={"Referer": f"https://www.bilibili.com/video/av{aid}"})
         if resp.get("code") == 0:
             return {"success": True, "message": "评论发布成功！", "data": resp.get("data")}
         else:
             return {"success": False, "message": resp.get("message", "发布失败"), "code": resp.get("code")}
+
+    def report_video_view(self, aid: int, cid: int, progress: int = 60) -> dict:
+        """向 B 站官方上报播放历史与进度，确保账号历史记录真实留痕"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf or not aid or not cid:
+            return {"success": False, "message": "参数不足或未登录"}
+
+        url = "https://api.bilibili.com/x/v2/history/report"
+        payload = {
+            "aid": int(aid),
+            "cid": int(cid),
+            "progress": int(progress),
+            "platform": "web",
+            "csrf": csrf
+        }
+        resp = self._request(
+            url,
+            method="POST",
+            data=payload,
+            headers={"Referer": f"https://www.bilibili.com/video/av{aid}"}
+        )
+        if resp.get("code") == 0:
+            return {"success": True, "message": "历史记录上报成功"}
+        return {"success": False, "message": resp.get("message", "上报失败"), "code": resp.get("code")}
+
+    def get_my_history(self, ps: int = 20) -> list[dict]:
+        """获取当前账号真实的 B 站云端观看历史记录"""
+        url = f"https://api.bilibili.com/x/web-interface/history/cursor?ps={ps}"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("list", [])
+        return []
+
+    def get_up_videos(self, mid: int, page: int = 1, page_size: int = 30) -> list[dict]:
+        """通过 WBI 验签抓取指定 UP 主的投稿视频列表"""
+        signed_params = self.sign_wbi({
+            "mid": mid,
+            "ps": page_size,
+            "pn": page,
+            "order": "pubdate"
+        })
+        resp = self._request("https://api.bilibili.com/x/space/wbi/arc/search", params=signed_params)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("list", {}).get("vlist", [])
+        return []
+
+    def like_video(self, aid: int, like: int = 1) -> dict:
+        """点赞视频 (like: 1 点赞, 2 取消点赞)"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+
+        url = "https://api.bilibili.com/x/web-interface/archive/like"
+        payload = {
+            "aid": aid,
+            "like": like,
+            "csrf": csrf
+        }
+        resp = self._request(url, method="POST", data=payload, headers={"Referer": f"https://www.bilibili.com/video/av{aid}"})
+        code = resp.get("code")
+        if code == 0:
+            return {"success": True, "message": "点赞成功！"}
+        elif code == 65006:
+            return {"success": True, "message": "已点过赞"}
+        else:
+            return {"success": False, "message": resp.get("message", "点赞失败"), "code": code}
+
+    def send_danmaku(self, cid: int, bvid: str, message: str, progress_ms: int = 3000, color: int = 16766720) -> dict:
+        """在指定时间戳发送弹幕 (color 默认为闪闪的金色 16766720)"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        if not csrf:
+            return {"success": False, "message": "未登录或缺少 csrf 凭证"}
+
+        url = "https://api.bilibili.com/x/v2/dm/post"
+        payload = {
+            "type": 1,
+            "oid": cid,
+            "msg": message,
+            "bvid": bvid,
+            "progress": progress_ms,
+            "color": color,
+            "fontsize": 25,
+            "mode": 1,
+            "rnd": int(time.time() * 1000),
+            "csrf": csrf
+        }
+        resp = self._request(url, method="POST", data=payload, headers={"Referer": f"https://www.bilibili.com/video/{bvid}"})
+        if resp.get("code") == 0:
+            return {"success": True, "message": "弹幕发送成功！", "data": resp.get("data")}
+        else:
+            return {"success": False, "message": resp.get("message", "弹幕发送失败"), "code": resp.get("code")}
+
+    def get_home_recommendations(self, ps: int = 15) -> list[dict]:
+        """抓取 B 站首页推荐信息流视频 (海量初筛专用)"""
+        url = "https://api.bilibili.com/x/web-interface/index/top/feed/rcmd"
+        resp = self._request(url, params={"ps": ps, "fresh_type": 3, "feed_version": "V8"})
+        if resp.get("code") == 0:
+            items = resp.get("data", {}).get("item", [])
+            results = []
+            for i in items:
+                bvid = i.get("bvid")
+                if bvid:
+                    results.append({
+                        "bvid": bvid,
+                        "aid": i.get("id"),
+                        "title": i.get("title", ""),
+                        "owner": {"name": i.get("owner", {}).get("name", "B站UP"), "mid": i.get("owner", {}).get("mid", 0)},
+                        "desc": i.get("desc", ""),
+                        "stat": i.get("stat", {}),
+                        "duration": i.get("duration", 0),
+                        "source": "首页推荐流"
+                    })
+            return results
+        return []
+
+    def get_followed_dynamic_videos(self, ps: int = 20) -> list[dict]:
+        """抓取关注的 UP 主发布的最新视频动态 (午后精读专用)"""
+        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all"
+        resp = self._request(url, params={"type": "video"})
+        if resp.get("code") == 0:
+            items = resp.get("data", {}).get("items", [])
+            results = []
+            for item in items:
+                if item.get("type") == "DYNAMIC_TYPE_AV":
+                    author = item.get("modules", {}).get("module_author", {})
+                    archive = item.get("modules", {}).get("module_dynamic", {}).get("major", {}).get("archive", {})
+                    bvid = archive.get("bvid")
+                    if bvid:
+                        results.append({
+                            "bvid": bvid,
+                            "aid": archive.get("aid"),
+                            "title": archive.get("title", ""),
+                            "owner": {"name": author.get("name", ""), "mid": author.get("mid", 0)},
+                            "desc": archive.get("desc", ""),
+                            "duration_text": archive.get("duration_text", ""),
+                            "stat": archive.get("stat", {}),
+                            "source": f"关注UP主动态 ({author.get('name')})"
+                        })
+            return results
+        return []
+
+    def send_private_message(self, receiver_uid: int, content: str) -> dict:
+        """向指定用户（主人）发送 B 站私信"""
+        csrf = self.config.get("auth", {}).get("bili_jct", "")
+        sender_uid = self.config.get("auth", {}).get("dedeuserid", "")
+        if not csrf or not sender_uid:
+            return {"success": False, "message": "未登录或缺少凭证"}
+
+        import uuid
+        dev_id = str(uuid.uuid4()).upper()
+        url = "https://api.vc.bilibili.com/web_im/v1/web_im/send_msg"
+        payload = {
+            "msg[sender_uid]": sender_uid,
+            "msg[receiver_id]": receiver_uid,
+            "msg[receiver_type]": 1,
+            "msg[msg_type]": 1,
+            "msg[msg_status]": 0,
+            "msg[content]": json.dumps({"content": content}, ensure_ascii=False),
+            "msg[timestamp]": int(time.time()),
+            "msg[new_face_version]": 0,
+            "msg[dev_id]": dev_id,
+            "csrf": csrf,
+            "csrf_token": csrf,
+            "build": 0,
+            "mobi_app": "web"
+        }
+        resp = self._request(
+            url,
+            method="POST",
+            data=payload,
+            headers={
+                "Origin": "https://message.bilibili.com",
+                "Referer": "https://message.bilibili.com/"
+            }
+        )
+        if resp.get("code") == 0:
+            return {"success": True, "message": "私信发送成功！", "data": resp.get("data")}
+        else:
+            code = resp.get("code")
+            msg = resp.get("message", "私信发送失败")
+            if code == 21001:
+                msg = "B站风控拦截: 需要关注对方或对方设置了仅接收互关私信"
+            elif code == 21002:
+                msg = "发送私信过于频繁，请稍后再试"
+            return {"success": False, "message": msg, "code": code}
+
+    def get_at_notifications(self) -> list[dict]:
+        """拉取 B 站通知中心谁 @ 了我"""
+        url = "https://api.bilibili.com/x/msgfeed/at"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("items", [])
+        return []
+
+    def get_unread_sessions(self) -> list[dict]:
+        """拉取最近的私信会话列表"""
+        url = "https://api.vc.bilibili.com/session_svr/v1/session_svr/new_sessions?begin_ts=0&build=0&mobi_app=web"
+        resp = self._request(url)
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("session_list", [])
+        return []
 
 
 if __name__ == "__main__":

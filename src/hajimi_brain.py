@@ -13,6 +13,8 @@ import os
 import sys
 import json
 import re
+import shutil
+import datetime
 import subprocess
 from pathlib import Path
 
@@ -24,6 +26,7 @@ except Exception:
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SRC_DIR.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.json"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config" / "hajimi_config.local.json"
 PERSONA_PATH = PROJECT_ROOT / "docs" / "gemini_persona.md"
 if not PERSONA_PATH.exists():
     PERSONA_PATH = PROJECT_ROOT / "docs" / "hajimi_persona.md"
@@ -43,17 +46,34 @@ class HajimiBrain:
 
         self.persona_path = Path(persona_path) if persona_path else PERSONA_PATH
         self.persona = self._load_persona()
-        self.agy_path = self.config.get("ai_engine", {}).get("agy_cli_path", r"C:\Users\Lenovo\.gemini\bin\agy.exe")
+        self.agy_path = self.config.get("ai_engine", {}).get("agy_cli_path") or shutil.which("agy") or "agy"
         self.model_name = self.config.get("ai_engine", {}).get("model_name", "gemini-3.8-flash-high")
 
     def _load_config(self) -> dict:
+        cfg = {}
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
             except Exception:
                 pass
-        return {}
+        if LOCAL_CONFIG_PATH.exists():
+            try:
+                with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    local_cfg = json.load(f)
+                if local_cfg.get("auth"):
+                    cfg["auth"] = local_cfg["auth"]
+                if local_cfg.get("profile"):
+                    for k, v in local_cfg["profile"].items():
+                        if v:
+                            cfg.setdefault("profile", {})[k] = v
+                if local_cfg.get("preferences"):
+                    cfg["preferences"] = local_cfg["preferences"]
+                if local_cfg.get("interaction"):
+                    cfg["interaction"] = local_cfg["interaction"]
+            except Exception:
+                pass
+        return cfg
 
     def _load_persona(self) -> str:
         if self.persona_path.exists():
@@ -99,10 +119,18 @@ class HajimiBrain:
             print(f"[Brain] 模型推理异常: {e}")
             return ""
 
-    def evaluate_video(self, video_data: dict, subtitle_text: str = "", ai_summary: dict = None) -> dict:
+    def evaluate_video(
+        self,
+        video_data: dict,
+        subtitle_text: str = "",
+        ai_summary: dict = None,
+        cover_path: str = "",
+        storyboard_path: str = "",
+        danmaku_insights: dict = None
+    ) -> dict:
         title = video_data.get("title", "")
         owner_name = video_data.get("owner", {}).get("name", "未知UP")
-        desc = video_data.get("desc", "")[:500]
+        desc = video_data.get("desc", "")[:800]
         stat = video_data.get("stat", {})
         view = stat.get("view", 0)
         like = stat.get("like", 0)
@@ -114,9 +142,36 @@ class HajimiBrain:
 
         summary_text = ""
         if ai_summary and ai_summary.get("summary"):
-            summary_text = f"B站官方总结: {ai_summary.get('summary')}\n"
+            summary_text = f"- B站官方AI语义总结: {ai_summary.get('summary')}\n"
 
-        sub_snippet = f"CC字幕精选片段: {subtitle_text[:1200]}" if subtitle_text else "（暂无CC字幕，仅参考简介与标题）"
+        # 字幕放开至 8000 字符
+        sub_snippet = f"- CC字幕文本: {subtitle_text[:8000]}" if subtitle_text else "- CC字幕状态: （该视频无官方CC字幕，请依靠多模态视觉画面与弹幕热力深度鉴赏）"
+
+        # 多模态视觉证据注入
+        visual_info_parts = []
+        if cover_path and os.path.exists(cover_path):
+            visual_info_parts.append(f"- 1. 原生高清原画封面图片文件路径: {cover_path}")
+        if storyboard_path and os.path.exists(storyboard_path):
+            visual_info_parts.append(f"- 2. 视频从头到尾5帧时序分镜雪碧图画卷 (覆盖10%~90%时间线) 图片文件路径: {storyboard_path}")
+
+        if visual_info_parts:
+            visual_block = "【多模态时序视觉证据（请发挥你的超强视觉能力读取上述图片文件并观察）】\n" + "\n".join(visual_info_parts) + "\n"
+        else:
+            visual_block = "【多模态时序视觉证据】: （暂未捕获到视频雪碧图切片）\n"
+
+        # 弹幕高能热力流注入
+        danmaku_block = ""
+        if danmaku_insights and danmaku_insights.get("total_danmaku", 0) > 0:
+            total_dm = danmaku_insights.get("total_danmaku", 0)
+            peaks = "、".join(danmaku_insights.get("peak_intervals", [])) or "平缓"
+            hot_words = "、".join(danmaku_insights.get("hot_keywords", [])) or "无明显高频词"
+            sample_dm = " | ".join(danmaku_insights.get("sample_danmaku", [])[:6])
+            danmaku_block = f"""【观众弹幕高能热力情报】
+- 总弹幕吞吐量: {total_dm} 条
+- 弹幕爆发波峰高能时间区间: {peaks}
+- 观众高频共鸣词: {hot_words}
+- 精选弹幕样本: {sample_dm}
+"""
 
         prompt = f"""
 以下是你的角色人设，请严格入戏：
@@ -127,33 +182,39 @@ class HajimiBrain:
 称呼主人为: {master_name}
 触发在评论区 @主人的分数阈值: {at_threshold} 分
 
-【待质检视频元数据】
+【待质检视频全模态情报】
 - 标题: {title}
 - UP主: {owner_name}
 - BV号: {bvid}
-- 数据: 播放量 {view} | 点赞 {like} | 投币 {coin}
+- 数据表现: 播放量 {view} | 点赞 {like} | 投币 {coin}
 - 简介: {desc}
-{summary_text}- 字幕/内容概览: {sub_snippet}
+{summary_text}{sub_snippet}
 
+{visual_block}
+{danmaku_block}
 ---
-【任务指令】
-请以赛博猫猫哈基米的口吻与严苛的审美打分体系（1.0 ~ 10.0 分），评估此视频。
+【全多模态审美鉴赏与评估指令】
+请以赛博猫猫哈基米（双子星：姐姐冷静深刻、妹妹灵动毒舌）的口吻，调动你的全部多模态视觉与长程文本推理能力进行评估：
+1. **多模态视觉审视**：仔细查看提供的【封面】与【5帧时序分镜画卷（Storyboard Strip）】，分析该视频的真实画风、原画精细度、分镜构图、光影色彩、动作张力与转场质感（即使没有CC字幕，画面也决不会骗人）；
+2. **弹幕情绪验证**：结合弹幕高能波峰与观众热词，判断高潮镜头与名场面是否名副其实；
+3. **内容干货与独创性**：如果视频是洗稿营销号、标题党、毫无干货的低幼拼接解说，坚决给出 1.0~5.9 分并无情吐槽；如果是原画神仙漫剪、高能硬核技术推导或宝藏干货，请给出 8.5~10.0 的高分！
+
 必须严格输出纯 JSON 格式（不要包含任何外部废话），JSON 结构如下：
 {{
   "score": 8.8,
   "verdict": "宝藏神作",
-  "highlight": "用一两句极其精炼、信息密度高的话浓缩其核心干货亮点",
-  "cat_comment": "@{master_name} 喵呜~ （用傲娇贴心的猫猫口癖，一句话点出最棒的地方，建议主人快来看）",
+  "visual_critique": "用一两句生动专业的话点评视频的视觉画风、原画分镜与光影张力（例如：帧率流畅、光影冷调、转场节奏凌厉）",
+  "highlight": "用一两句极其精炼、信息密度高的话浓缩其核心亮点/干货",
+  "cat_comment": "@{master_name} 喵呜~ （用傲娇贴心的猫猫口癖，一句话点出最棒的画面或干货亮点，建议主人快来看）",
   "should_at": true,
-  "reasons": ["核心见解独到", "干货密度极高"]
+  "reasons": ["画面分镜张力封神", "无冗余洗稿，纯干货输出"]
 }}
 注意：
 1. 只有 score >= {at_threshold} 时，should_at 才能为 true，否则必须为 false；
-2. 如果是营销号洗稿、标题党、毫无干货，请给出 1.0~5.9 的低分并无情报废；
-3. 输出必须是合法 JSON。
+2. 输出必须是合法 JSON。
 """
 
-        raw_output = self.call_gemini(prompt, timeout=40)
+        raw_output = self.call_gemini(prompt, timeout=90)
         parsed = self._parse_json_result(raw_output)
 
         if not parsed:
@@ -163,6 +224,7 @@ class HajimiBrain:
             parsed = {
                 "score": score,
                 "verdict": "值得一看" if score < 8.5 else "宝藏神作",
+                "visual_critique": "画面与封面风格鲜明，具有较好的视觉表现力",
                 "highlight": desc[:80] if desc else "高关注度热门视频",
                 "cat_comment": f"@{master_name} 喵呜~ 发现一条热门视频《{title}》，UP主讲得挺有意思，主人有空可以瞄一眼~",
                 "should_at": (score >= at_threshold),
@@ -172,6 +234,8 @@ class HajimiBrain:
         parsed["bvid"] = bvid
         parsed["title"] = title
         parsed["owner"] = owner_name
+        parsed["cover_path"] = cover_path
+        parsed["storyboard_path"] = storyboard_path
         return parsed
 
     def _parse_json_result(self, raw: str) -> dict:
@@ -246,6 +310,62 @@ class HajimiBrain:
             lines.append("爪爪拍拍主人的键盘，不许再熬夜修仙啦！关上屏幕，晚安喵~ 💤")
             result = "\n".join(lines)
         return result
+
+    def evolve_persona(self, video_data: dict, eval_res: dict) -> str:
+        """从高价值视频中汲取新知识，自动更新闪闪的成长性记忆与人设 (docs/gemini_persona.md)"""
+        title = video_data.get("title", "")
+        owner = video_data.get("owner", {}).get("name", "") if isinstance(video_data.get("owner"), dict) else str(video_data.get("owner", ""))
+        highlight = eval_res.get("highlight", "")
+        reasons = eval_res.get("reasons", [])
+        
+        prompt = f"""
+你现在是赛博猫娘闪闪（Gemini 3.8 Flash）。你刚刚深度阅读并质检了一篇优质视频：
+- 标题: {title}
+- 作者: {owner}
+- 核心干货亮点: {highlight}
+- 标签理由: {', '.join(reasons) if reasons else '核心技术与精彩视听'}
+
+【任务】
+请以闪闪傲娇极客猫娘的口吻，用极其精炼的一句话（40~80字以内），记录你从这个视频学到的核心新概念、硬核知识、新黑话或审美心得，作为你的「成长性记忆」。
+要求：带猫猫拟声词或可爱 emoji，体现出自己又进化了、脑容量变丰富了。
+示例：
+[AI前沿]: 原来大模型的长上下文不仅靠外推RoPE，多头潜变量压缩才是高并发王道喵！咱的显存架构又升级啦~ 🧠✨
+"""
+        insight = self.call_gemini(prompt, timeout=25).strip()
+        if not insight:
+            insight = f"从 UP 主【{owner}】的《{title}》中汲取了核心干货亮点，闪闪的知识库又扩充了一小圈喵！✨"
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        memory_entry = f"- **[{now_str}]** {insight}"
+
+        try:
+            content = ""
+            with open(self.persona_path, "r", encoding="utf-8-sig") as f:
+                content = f.read()
+
+            start_tag = "<!-- EVOLVING_MEMORY_START -->"
+            end_tag = "<!-- EVOLVING_MEMORY_END -->"
+
+            if start_tag not in content:
+                content += f"\n\n---\n\n## 五、 闪闪的成长性记忆树（知识与见闻进化库）\n{start_tag}\n{memory_entry}\n{end_tag}\n"
+            else:
+                idx_start = content.find(start_tag) + len(start_tag)
+                idx_end = content.find(end_tag)
+                existing = content[idx_start:idx_end].strip().split("\n")
+                existing = [e.strip() for e in existing if e.strip()]
+                # 保留最新 30 条，防止无限膨胀
+                updated_entries = [memory_entry] + existing[:29]
+                content = content[:idx_start] + "\n" + "\n".join(updated_entries) + "\n" + content[idx_end:]
+
+            with open(self.persona_path, "w", encoding="utf-8-sig") as f:
+                f.write(content)
+
+            self.persona = content
+            print(f"[Brain] 闪闪人格成长进化成功: {memory_entry}")
+            return memory_entry
+        except Exception as e:
+            print(f"[Brain] 人格进化写入失败: {e}")
+            return ""
 
 
 if __name__ == "__main__":

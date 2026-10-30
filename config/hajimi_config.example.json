@@ -87,7 +87,7 @@
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
   "ai_engine": {
-    "agy_cli_path": "C:\\Users\\Lenovo\\.gemini\\bin\\agy.exe",
+    "agy_cli_path": "agy",
     "model_name": "gemini-3.8-flash-high",
     "reasoning_effort": "medium"
   },
