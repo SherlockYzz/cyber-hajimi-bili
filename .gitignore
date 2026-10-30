@@ -38,3 +38,5 @@ scripts/temp_*.py
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+scratch/

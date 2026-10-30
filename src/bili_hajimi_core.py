@@ -100,33 +100,20 @@ class BiliHajimiCore:
                     cfg["preferences"] = local_cfg["preferences"]
                 if local_cfg.get("interaction"):
                     cfg["interaction"] = local_cfg["interaction"]
+                if local_cfg.get("schedule"):
+                    cfg["schedule"] = local_cfg["schedule"]
             except Exception:
                 pass
         return cfg
 
     def save_config(self):
         try:
-            # 1. 如果存在 local 配置，则将完整设置（含真实凭据与UID）持久化写入 local.json (已 gitignore)
+            # 1. 保存主配置
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, ensure_ascii=False, indent=2)
+            # 2. 同步写入 local.json 保持双向一致
             if LOCAL_CONFIG_PATH.exists():
                 with open(LOCAL_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(self.config, f, ensure_ascii=False, indent=2)
-                # 2. 对公开的主配置进行脱敏保存，杜绝任何个人凭据泄露
-                import copy
-                clean_cfg = copy.deepcopy(self.config)
-                clean_cfg["auth"] = {
-                    "dedeuserid": "",
-                    "sessdata": "",
-                    "bili_jct": "",
-                    "buvid3": "",
-                    "buvid4": ""
-                }
-                if "profile" in clean_cfg:
-                    clean_cfg["profile"]["master_uid"] = 0
-                    clean_cfg["profile"]["master_name"] = "主人"
-                with open(self.config_path, "w", encoding="utf-8") as f:
-                    json.dump(clean_cfg, f, ensure_ascii=False, indent=2)
-            else:
-                with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(self.config, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Core] 保存配置失败: {e}")
@@ -344,22 +331,19 @@ class BiliHajimiCore:
         except Exception as e:
             return {"status": "error", "code": -1, "message": str(e)}
 
-    def get_user_info(self) -> dict:
+    def get_user_info(self, cache_ttl: int = 60) -> dict:
+        now = time.time()
+        if hasattr(self, "_user_info_cache") and self._user_info_cache and (now - getattr(self, "_user_info_cached_at", 0) < cache_ttl):
+            return self._user_info_cache
+
         resp = self._request("https://api.bilibili.com/x/web-interface/nav")
         if resp.get("code") == 0 and resp.get("data", {}).get("isLogin"):
             data = resp["data"]
             mid = data.get("mid", 0)
             uname = data.get("uname", "")
 
-            # 若配置中尚未绑定主人 UID，自动同步绑定
-            profile = self.config.setdefault("profile", {})
-            if mid and (not profile.get("master_uid") or profile["master_uid"] == 0):
-                profile["master_uid"] = mid
-                profile["master_name"] = uname
-                self.save_config()
-
             self.config["auth"]["is_logged_in"] = True
-            return {
+            info = {
                 "is_login": True,
                 "mid": mid,
                 "uname": uname,
@@ -367,6 +351,9 @@ class BiliHajimiCore:
                 "avatar": data.get("face", ""),
                 "coins": data.get("money", 0),
             }
+            self._user_info_cache = info
+            self._user_info_cached_at = now
+            return info
         return {"is_login": False, "mid": 0, "uname": "未登录", "vip": 0, "avatar": "", "coins": 0}
 
     # ==================== 视频获取 ====================
@@ -623,8 +610,33 @@ class BiliHajimiCore:
             "sample_danmaku": sample_dm
         }
 
-    # ==================== 评论与互动 ====================
-    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None) -> dict:
+    # ==================== 评论与社区互动 ====================
+    def get_video_hot_comments(self, aid: int, count: int = 6) -> list[dict]:
+        """通过 WBI 验签抓取视频最热门的高赞社区评论与核心讨论点"""
+        if not aid:
+            return []
+        try:
+            params = {"oid": int(aid), "type": 1, "mode": 3, "ps": count}
+            signed = self.sign_wbi(params)
+            res = self._request("https://api.bilibili.com/x/v2/reply/wbi/main", params=signed)
+            if res.get("code") == 0:
+                replies = res.get("data", {}).get("replies", []) or []
+                hot_list = []
+                for r in replies[:count]:
+                    hot_list.append({
+                        "rpid": r.get("rpid"),
+                        "uname": r.get("member", {}).get("uname", "热心网友"),
+                        "like": r.get("like", 0),
+                        "message": r.get("content", {}).get("message", "").strip(),
+                        "rcount": r.get("rcount", 0)
+                    })
+                return hot_list
+        except Exception as e:
+            print(f"[Core] 抓取热门评论异常: {e}")
+        return []
+
+    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None, root: int = 0, parent: int = 0) -> dict:
+        """发布视频主楼评论或回复指定热门评论参与社区讨论"""
         csrf = self.config.get("auth", {}).get("bili_jct", "")
         if not csrf:
             return {"success": False, "message": "未登录或缺少 csrf 凭证"}
@@ -637,6 +649,10 @@ class BiliHajimiCore:
             "csrf": csrf,
             "plat": 1,
         }
+        if root:
+            payload["root"] = int(root)
+        if parent:
+            payload["parent"] = int(parent)
         if at_name_to_mid:
             payload["at_name_to_mid"] = json.dumps(at_name_to_mid, ensure_ascii=False)
 

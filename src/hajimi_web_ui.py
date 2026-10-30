@@ -100,8 +100,9 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 "recent": daemon_instance.state.get("recent_evaluations", [])[:80],
                 "activity_logs": daemon_instance.state.get("activity_logs", [])[:150],
                 "config": daemon_instance.config,
-                "is_cruising": is_cruising,
-                "cruise_logs": cruise_logs_buffer[-40:],
+                "is_cruising": is_cruising or daemon_instance.is_cruising,
+                "cruise_logs": daemon_instance.cruise_logs[-60:] if daemon_instance.cruise_logs else cruise_logs_buffer[-60:],
+                "next_auto_cruise_time": daemon_instance.next_auto_cruise_time,
             }
             self._send_json(resp)
         elif path == "/api/qrcode":
@@ -228,7 +229,7 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "message": str(e)}, 500)
 
         elif path == "/api/cruise":
-            if is_cruising:
+            if is_cruising or daemon_instance.is_cruising:
                 self._send_json({"success": False, "message": "闪闪正在巡航冲浪中，请稍候喵..."})
                 return
 
@@ -261,6 +262,13 @@ class HajimiWebHandler(BaseHTTPRequestHandler):
             status = "成功" if res.get("success") else "失败"
             daemon_instance.log_activity("发站内私信(测试)", f"主人UID: {target_uid}", content, status=status, details=res.get("message", ""))
             self._send_json(res)
+
+        elif path == "/api/boost_master":
+            def _boost():
+                daemon_instance.interact_with_master_videos()
+            t = threading.Thread(target=_boost, daemon=True)
+            t.start()
+            self._send_json({"success": True, "message": "已成功启动主人视频专属护航队列！全量点赞、多投弹幕与深度长评进行中..."})
 
         elif path == "/api/morning_journal":
             path_file = daemon_instance.generate_morning_journal_file()
@@ -754,6 +762,10 @@ def get_dashboard_html() -> str:
         <span class="stat-label">仿生精力池</span>
         <span id="statStamina" class="stat-val" style="color:#ea580c;">100 / 100</span>
       </div>
+      <div class="stat-pill" style="min-width: 220px; border-left: 3px solid #10b981;">
+        <span class="stat-label">后台自动巡航状态</span>
+        <span id="statAutoStatus" class="stat-val" style="color:#059669; font-size:13px; font-weight:600;">🟢 自动化常驻就绪</span>
+      </div>
     </div>
 
     <!-- Tab 1: 视频质检画卷 (默认显示，解决痛点 1) -->
@@ -765,6 +777,7 @@ def get_dashboard_html() -> str:
         </div>
         <div class="header-actions">
           <button class="btn-action" onclick="loadStatus()">🔄 刷新列表</button>
+          <button class="btn-action" style="background:#ec4899; color:#fff;" onclick="triggerBoostMaster()">⭐ 一键应援主人作品</button>
           <button class="btn-action btn-primary" onclick="triggerCruise()">🚀 立即派闪闪出击巡航</button>
         </div>
       </div>
@@ -986,6 +999,28 @@ def get_dashboard_html() -> str:
       document.getElementById('statInteractions').innerText = (data.activity_logs ? data.activity_logs.length : 0) + ' 笔操作';
       document.getElementById('statStamina').innerText = `${Math.round(data.stamina || 100)} / 100`;
 
+      // 后台巡航倒计时与状态
+      const autoEl = document.getElementById('statAutoStatus');
+      if (autoEl) {
+        if (data.is_cruising) {
+          autoEl.innerHTML = '<span style="color:#2563eb;">🚀 正在巡航品鉴中...</span>';
+        } else if (data.in_window) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const nextSec = data.next_auto_cruise_time || 0;
+          const diff = Math.max(0, nextSec - nowSec);
+          const mins = Math.floor(diff / 60);
+          const secs = diff % 60;
+          const winName = data.current_window ? data.current_window.name : '巡航时段';
+          if (nextSec > 0 && diff > 0) {
+            autoEl.innerHTML = `🟢 【${winName}】下次: <strong>${mins}分${secs}秒</strong>`;
+          } else {
+            autoEl.innerHTML = `🟢 【${winName}】即将自动触发出击`;
+          }
+        } else {
+          autoEl.innerHTML = `<span style="color:#64748b;">🌙 【休眠恢复时段】打盹中</span>`;
+        }
+      }
+
       // 填充设置项 (若用户当前焦点正在输入框内，不覆写以避免打字被打断)
       const isEditingConfig = document.activeElement && document.activeElement.closest && document.activeElement.closest('.pm-box');
       if (!isEditingConfig) {
@@ -1065,6 +1100,13 @@ def get_dashboard_html() -> str:
         <div class="eval-cat-comment"><strong>🐾 猫娘品鉴评语:</strong> ${item.cat_comment}</div>
       ` : '';
 
+      const communityHtml = item.community_sentiment ? `
+        <div class="eval-highlight" style="background:#f0fdf4; border-left:3px solid #22c55e; margin-top:8px;">
+          <strong>💬 社区高赞讨论与舆情感知:</strong> ${item.community_sentiment}
+          ${item.discussion_reply ? `<br/><strong style="color:#059669;">🐾 社区热评跟帖互动:</strong> “${item.discussion_reply}”` : ''}
+        </div>
+      ` : '';
+
       return `
         <div class="eval-card">
           <div class="eval-header">
@@ -1082,6 +1124,7 @@ def get_dashboard_html() -> str:
           ${stripHtml}
           ${visualCritiqueHtml}
           ${highlightHtml}
+          ${communityHtml}
           ${catCommentHtml}
         </div>
       `;
@@ -1197,6 +1240,18 @@ def get_dashboard_html() -> str:
         sCont.innerHTML = '<div style="color:#9ca3af; padding:8px 0;">暂无私信会话记录。</div>';
       }
     } catch(e) {}
+  }
+
+  async function triggerBoostMaster() {
+    showToast('⭐ 正在唤醒闪闪对主人全部视频执行专属护航...');
+    try {
+      const res = await fetch('/api/boost_master', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+      setTimeout(loadStatus, 2000);
+    } catch(e) {
+      showToast('调用失败: ' + e);
+    }
   }
 
   async function triggerCruise() {
@@ -1329,6 +1384,16 @@ def get_dashboard_html() -> str:
 
 
 def run_server(port=8765):
+    # 启动后台守护巡航线程（开箱即实现全自动后台自主巡航，彻底脱离人工点击！）
+    daemon_thread = threading.Thread(
+        target=daemon_instance.start_daemon_loop,
+        kwargs={"check_interval_sec": 15},
+        daemon=True,
+        name="HajimiAutoDaemon"
+    )
+    daemon_thread.start()
+    print("[WebUI] 🐾 赛博养Gemini · 自动化后台常驻巡航守护线程已伴生启动！", flush=True)
+
     server_address = ("", port)
     httpd = HTTPServer(server_address, HajimiWebHandler)
     print(f"\n=======================================================")

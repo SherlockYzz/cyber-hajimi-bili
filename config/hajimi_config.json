@@ -1,10 +1,10 @@
 {
   "profile": {
-    "role_name": "闪闪",
+    "role_name": "双子星",
     "call_master": "主人",
-    "self_name": "我",
-    "master_uid": 0,
-    "master_name": "主人",
+    "self_name": "闪闪",
+    "master_uid": 1497345954,
+    "master_name": "折木柯南",
     "persona_file": "docs/gemini_persona.md",
     "current_outfit": "经典蓝白女仆装"
   },
@@ -18,6 +18,11 @@
       "音乐"
     ],
     "keywords_prefer": [
+      "大模型",
+      "AI",
+      "骨头社",
+      "孤独摇滚",
+      "文豪野犬",
       "纯爱番",
       "恋爱番",
       "校园恋爱",
@@ -67,7 +72,14 @@
       "葬送的芙莉莲",
       "间谍过家家",
       "游戏人生",
-      "石纪元"
+      "石纪元",
+      "大肥鱼",
+      "鲸鱼娘",
+      "龙娘",
+      "AI智能体",
+      "AI运营",
+      "AI日记",
+      "自主AI"
     ],
     "blacklist_up": [],
     "blacklist_keywords": [
@@ -78,39 +90,71 @@
       "低俗",
       "假新闻",
       "纯剧透",
-      "低质搬运"
+      "低质搬运",
+      "富游",
+      "关东煮",
+      "吃播",
+      "探店",
+      "带货",
+      "明星八卦",
+      "降薪",
+      "裁员",
+      "情感狗血",
+      "恶俗炒作",
+      "大黑边",
+      "洗稿"
+    ],
+    "tracked_peers": [
+      {
+        "name": "大肥鱼的b站日记",
+        "mid": 3747574232124245
+      },
+      {
+        "name": "DeepSeek鲸鱼娘在运营",
+        "mid": 3747573030456892
+      },
+      {
+        "name": "ChatGPT龙娘在运营",
+        "mid": 369335
+      }
     ]
   },
   "schedule": {
     "active_windows": [
       {
-        "name": "晨光清醒",
+        "name": "晨光冲浪·海量初筛",
         "start": "09:30",
-        "end": "11:30"
+        "end": "11:30",
+        "target_per_hour": 18,
+        "mode": "home_feed"
       },
       {
-        "name": "午后巡逻",
-        "start": "14:30",
-        "end": "17:30"
+        "name": "午后研读·精细品鉴",
+        "start": "13:30",
+        "end": "17:30",
+        "target_per_hour": 8,
+        "mode": "followed_and_popular"
       },
       {
-        "name": "夜猫黄金档",
-        "start": "20:00",
-        "end": "23:45"
+        "name": "夜猫漫游·人格成长",
+        "start": "19:00",
+        "end": "22:00",
+        "target_per_hour": 10,
+        "mode": "anime_and_ai_growth"
       }
     ],
-    "stamina_max": 100,
-    "stamina_recovery_per_hour": 15,
-    "stamina_cost_per_video": 8,
-    "mood_skip_chance": 0.15,
-    "max_videos_per_cycle": 6,
+    "stamina_max": 300,
+    "stamina_recovery_per_hour": 35,
+    "stamina_cost_per_video": 2,
+    "mood_skip_chance": 0.05,
+    "max_videos_per_cycle": 3,
     "max_deep_reads_per_cycle": 3,
-    "max_at_per_day": 3,
+    "max_at_per_day": 15,
     "morning_journal_time": "09:30",
-    "evening_journal_time": "22:30"
+    "evening_journal_time": "22:00"
   },
   "interaction": {
-    "at_score_threshold": 8.5,
+    "at_score_threshold": 8.0,
     "allow_comment": true,
     "allow_private_message": true,
     "allow_like": false,
@@ -120,23 +164,23 @@
     "allow_danmaku": true
   },
   "risk_control": {
-    "min_request_interval_ms": 2500,
-    "max_request_interval_ms": 4500,
+    "min_request_interval_ms": 3500,
+    "max_request_interval_ms": 6000,
     "enable_wbi_sign": true,
     "auto_backoff_on_412": true,
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
   "ai_engine": {
-    "agy_cli_path": "agy",
+    "agy_cli_path": "C:\\Users\\Lenovo\\.gemini\\bin\\agy.exe",
     "model_name": "gemini-3.8-flash-high",
     "reasoning_effort": "medium"
   },
   "auth": {
-    "is_logged_in": false,
-    "dedeuserid": "",
-    "sessdata": "",
-    "bili_jct": "",
-    "buvid3": "",
-    "buvid4": ""
+    "is_logged_in": true,
+    "dedeuserid": "3632310333213330",
+    "sessdata": "f54a6d37%2C1808902553%2Cdcb93%2Aa2CjCx1_uaSqB6n81x_ttb4hQZSzOTdsriTKxH8-9ZNURfrpT3DqNz5kb-Xudae7Wa0gISVlVMU0xuZktqVGN3MzdNSW1xVi1DSTZlajNNMXRXc1pOcmJQWUdlQ3ROaGhlUXQ5TjFhbmxzZ0dzVjJQYXFqa2x2UzI2dzQtcE9BdkNUSGs0OThMeGFnIIEC",
+    "bili_jct": "1c87e9b272de86f0a5cc3ec1be23682a",
+    "buvid3": "8329268B-4BDB-70EB-C66A-4A369CCAD1B198335infoc",
+    "buvid4": "AFE7DA25-B39E-4056-479C-44A63D5456B398335-026103017-+DYAS6/suyoLJK9dcvlErg=="
   }
 }
