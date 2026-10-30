@@ -736,6 +736,8 @@ class HajimiDaemon:
 
     def inspect_and_cheer_live(self, room_id: int = None, send_danmaku: bool = True) -> dict:
         """巡查 B 站直播间（严格遵循主人铁律：只看关注的主播直播，绝不看陌生人直播！）"""
+        import time
+        import random
         log_lines = []
         def _log(msg: str):
             line = f"[{time.strftime('%H:%M:%S')}] {msg}"
