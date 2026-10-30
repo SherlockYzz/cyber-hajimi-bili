@@ -1,33 +1,54 @@
 {
   "profile": {
-    "role_name": "闪闪",
+    "role_name": "若曦",
     "call_master": "主人",
     "self_name": "人家",
-    "master_uid": 0,
-    "master_name": "主人",
+    "master_uid": 1497345954,
+    "master_name": "折木柯南",
     "persona_file": "docs/gemini_persona.md",
-    "current_outfit": "青春水手校服"
+    "current_outfit": "青春水手校服",
+    "master_birthday": "2007-08-07",
+    "companion_uid": 3632310333213330,
+    "companion_name": "折木柯东",
+    "companion_birthday": "2007-08-07"
   },
   "preferences": {
     "target_zones": [
-      "数码",
+      "动画",
       "科技",
+      "数码",
       "知识",
       "游戏",
-      "动画",
-      "鬼畜",
-      "影视"
+      "影视",
+      "音乐"
     ],
     "keywords_prefer": [
-      "AI",
+      "算法",
+      "C语言",
+      "Python",
+      "牛客竞赛",
+      "数据结构",
       "大模型",
-      "Agent",
-      "黑科技",
-      "显卡",
-      "极客",
-      "深度学习",
-      "机器人",
-      "开源"
+      "AI Agent",
+      "开源黑科技",
+      "量子位",
+      "Google",
+      "X调查",
+      "本格推理",
+      "阿怪MrWeird",
+      "悬疑刑侦",
+      "动漫MAD",
+      "漫剪",
+      "轻小说",
+      "三河Ghost",
+      "义妹生活",
+      "实力至上主义教室",
+      "影视飓风",
+      "毕导",
+      "鸣潮",
+      "泛式",
+      "罗翔说刑法",
+      "Animenz"
     ],
     "blacklist_up": [],
     "blacklist_keywords": [
@@ -37,7 +58,8 @@
       "标题党",
       "低俗",
       "假新闻",
-      "纯剧透"
+      "纯剧透",
+      "低质搬运"
     ]
   },
   "schedule": {
@@ -75,7 +97,7 @@
     "allow_like": false,
     "allow_coin": false,
     "allow_fav": false,
-    "comment_style": "闪闪猫娘口吻+元气吐槽+@主人"
+    "comment_style": "闪闪元气口吻+硬核切入+@折木柯南"
   },
   "risk_control": {
     "min_request_interval_ms": 2500,
@@ -90,10 +112,10 @@
     "reasoning_effort": "medium"
   },
   "auth": {
-    "is_logged_in": false,
-    "dedeuserid": "",
-    "sessdata": "",
-    "bili_jct": "",
+    "is_logged_in": true,
+    "dedeuserid": "3632310333213330",
+    "sessdata": "f54a6d37%2C1808902553%2Cdcb93%2Aa2CjCx1_uaSqB6n81x_ttb4hQZSzOTdsriTKxH8-9ZNURfrpT3DqNz5kb-Xudae7Wa0gISVlVMU0xuZktqVGN3MzdNSW1xVi1DSTZlajNNMXRXc1pOcmJQWUdlQ3ROaGhlUXQ5TjFhbmxzZ0dzVjJQYXFqa2x2UzI2dzQtcE9BdkNUSGs0OThMeGFnIIEC",
+    "bili_jct": "1c87e9b272de86f0a5cc3ec1be23682a",
     "buvid3": "9A39D969-B9AA-08A9-D95D-EA9852E9462902370infoc",
     "buvid4": ""
   }
