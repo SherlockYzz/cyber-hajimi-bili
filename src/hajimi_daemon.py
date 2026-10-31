@@ -643,14 +643,14 @@ class HajimiDaemon:
                 time.sleep(random.uniform(3.0, 5.0))
                 # 智能分类收藏夹投递
                 if any(k in all_text for k in ["8d", "环绕音乐", "全景声", "空间音频", "沉浸式音频", "双耳音频"]):
-                    target_folder = "【闪闪精选】8D 环绕音乐"
-                    f_intro = "复刻主人品味：甄选高沉浸感 8D 空间全景声、双耳环绕与极致治愈音乐宝藏🐾"
+                    target_folder = "【闪闪精选】空间音频与沉浸原声"
+                    f_intro = "闪闪精选：甄选高沉浸感空间全景声、双耳环绕与极致治愈音乐宝藏🐾"
                 elif any(k in all_text for k in ["学习乐队", "乐队", "孤独摇滚", "结束乐队", "吉他", "贝斯", "轻音"]):
-                    target_folder = "【闪闪精选】学习乐队"
-                    f_intro = "复刻主人品味：甄选硬核乐队演练、孤独摇滚/轻音热血演奏与专注学习背景音🐾"
+                    target_folder = "【闪闪精选】器乐演奏与专注伴奏"
+                    f_intro = "闪闪精选：甄选硬核乐队演练、热血演奏与专注学习背景音🐾"
                 elif any(k in all_text for k in ["新海诚", "你的名字", "天气之子", "铃芽之旅", "言叶之庭", "秒速五厘米", "radwimps"]):
-                    target_folder = "【闪闪精选】新海诚与唯美视听"
-                    f_intro = "复刻主人品味：甄选新海诚光影美学、RADWIMPS 原声与神级动漫视听漫剪🐾"
+                    target_folder = "【闪闪精选】动漫光影与唯美视听"
+                    f_intro = "闪闪精选：甄选神级光影美学、原声大碟与神级动漫视听漫剪🐾"
                 elif any(k in all_text for k in ["ai", "大模型", "算法", "深度学习", "agent", "transformer"]):
                     target_folder = "【闪闪精选】AI与技术前沿"
                     f_intro = "闪闪精选：前沿人工智能、深度学习与大模型算法架构干货🐾"
@@ -991,8 +991,8 @@ class HajimiDaemon:
             if my_mid:
                 self.core.bot_uid = my_mid
 
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
-        master_uid = self.config.get("profile", {}).get("master_uid", 1497345954)
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
+        master_uid = self.config.get("profile", {}).get("master_uid", 0)
         at_map = {master_name: str(master_uid)}
 
         results = []
@@ -1073,7 +1073,7 @@ class HajimiDaemon:
                         r_mid = r.get("member", {}).get("mid", 0)
                         if my_mid and str(r_mid) == str(my_mid):
                             continue
-                        if r_user == master_name or r_user == "折木柯南":
+                        if r_user == master_name or r_user == "主人":
                             continue
                         # 查找提及 AI、技术或趣味梗的评论
                         if any(kw in r_content.lower() for kw in ["ai", "deepseek", "gpt", "gemini", "模型", "智能", "机器人", "逃逸", "算法", "猫娘", "大肥鱼"]):
@@ -1102,7 +1102,7 @@ class HajimiDaemon:
     def interact_with_master_videos(self) -> dict:
         """对主人的视频进行专属点赞、上报历史，并在发现全新视频时发表一条高质评论与弹幕（严格双重防重，绝不重复发评）"""
         master_uid = self.config.get("profile", {}).get("master_uid")
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         if not master_uid:
             return {"success": False, "message": "未配置主人 UID"}
 
@@ -1574,7 +1574,7 @@ class HajimiDaemon:
             if my_mid:
                 self.core.bot_uid = int(my_mid)
         str_my_mid = str(my_mid) if my_mid else ""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
 
         commented_bvids = set(self.state.get("commented_followed_bvids", []))
         commented_dyns = set(self.state.get("commented_followed_dyn_ids", []))

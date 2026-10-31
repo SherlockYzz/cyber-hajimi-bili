@@ -40,3 +40,12 @@ Thumbs.db
 Desktop.ini
 
 scratch/
+
+# Local Operations & Dynamic Media (本地日常运营产物，绝不上推 GitHub)
+images/*Day*.*
+images/*动态*.*
+images/*日常*.*
+images/*夜间*.*
+images/*晨光*.*
+docs/*.local.md
+*.local.md

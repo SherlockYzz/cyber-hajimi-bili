@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 赛博养Gemini · 伴生猫娘一键同步关注主人喜爱的 UP 主
-- 自动抓取主人 (UID 从配置动态读取) 的关注列表
+- 自动抓取主人 (UID 动态读取) 的关注列表
 - 自动识别并为当前伴生猫娘账号关注每一位 UP 主
 - 附带平滑安全冷却（1.2s ~ 2.0s）避免触发风控频限
 """
@@ -22,7 +22,7 @@ def sync_followings():
     core = BiliHajimiCore()
     master_uid = MASTER_UID or core.config.get("profile", {}).get("master_uid", 0)
     if not master_uid:
-        print("[提示] 请先在控制中心 (http://127.0.0.1:8765) 或配置文件中填入主人的 B 站 UID！")
+        print("[提示] 请先在控制中心或配置文件中填入主人的 B 站 UID！")
         return
 
     csrf = core.config.get("auth", {}).get("bili_jct", "")
@@ -60,7 +60,7 @@ def sync_followings():
             if code == 0:
                 success_count += 1
                 print(f"[{idx}/{total_ups}] ✨ 成功关注: {uname} (UID: {mid})")
-            elif code == 22002:
+            elif code == 22002:  # 已经在关注列表中
                 already_count += 1
                 print(f"[{idx}/{total_ups}] ☕ 已在关注列表中: {uname} (UID: {mid})")
             else:
@@ -70,6 +70,7 @@ def sync_followings():
             failed_count += 1
             print(f"[{idx}/{total_ups}] ❌ 关注异常: {uname} -> {e}")
 
+        # 安全防风控随机间隔
         time.sleep(random.uniform(1.2, 1.8))
 
     print("============================================================")

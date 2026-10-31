@@ -415,7 +415,7 @@ class HajimiBrain:
         view = stat.get("view", 0)
         like = stat.get("like", 0)
 
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         at_threshold = self.config.get("interaction", {}).get("at_score_threshold", 7.5)
 
         # 专栏文章篇幅适配（最多支持 10000 字）
@@ -505,7 +505,7 @@ class HajimiBrain:
         online = room_info.get("online", 0)
         live_status = room_info.get("live_status", 0)
 
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
 
         # 弹幕样本
         dm_block = ""
@@ -645,8 +645,14 @@ class HajimiBrain:
         memory_entry = f"- **[{now_str}]** {insight}"
 
         try:
+            local_persona = self.persona_path.with_name(self.persona_path.stem + ".local" + self.persona_path.suffix)
+            if not local_persona.exists() and self.persona_path.exists():
+                import shutil
+                shutil.copy2(self.persona_path, local_persona)
+            target_file = local_persona if local_persona.exists() else self.persona_path
+
             content = ""
-            with open(self.persona_path, "r", encoding="utf-8-sig") as f:
+            with open(target_file, "r", encoding="utf-8-sig") as f:
                 content = f.read()
 
             start_tag = "<!-- EVOLVING_MEMORY_START -->"
@@ -663,7 +669,7 @@ class HajimiBrain:
                 updated_entries = [memory_entry] + existing[:29]
                 content = content[:idx_start] + "\n" + "\n".join(updated_entries) + "\n" + content[idx_end:]
 
-            with open(self.persona_path, "w", encoding="utf-8-sig") as f:
+            with open(target_file, "w", encoding="utf-8-sig") as f:
                 f.write(content)
 
             self.persona = content
@@ -719,7 +725,7 @@ class HajimiBrain:
 
     def generate_followed_dynamic_reply(self, up_name: str, dyn_type: str, dyn_text: str) -> str:
         """为关注 UP 主发布的全新动态（图文、文字、转发等）生成高情商、可爱又风趣的评论"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         clean_text = dyn_text[:200] if dyn_text else "分享了一条新动态"
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
@@ -746,7 +752,7 @@ class HajimiBrain:
 
     def generate_followed_video_reply(self, up_name: str, video_title: str, video_desc: str = "") -> str:
         """为关注 UP 主发布的最新视频生成元气满满的应援与期待留评"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
 标志特征：异色双眸、全息猫耳、元气灵动、审美在线。
@@ -784,7 +790,7 @@ class HajimiBrain:
     def generate_pm_reply(self, sender_name: str, sender_uid: int, sender_msg: str) -> str:
         """针对用户或主人发来的站内私信，由 Gemini 生成温暖、忠诚或可爱的回复"""
         master_uid = self.config.get("profile", {}).get("master_uid")
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         is_master = bool(master_uid and int(sender_uid) == int(master_uid))
 
         if is_master:
@@ -832,7 +838,7 @@ B 站普通用户【{sender_name}】（UID: {sender_uid}）给你发来了站内
             reply = re.sub(r'^["\'「」]|["\'「」]$', '', reply).strip()
             if not reply or len(reply) < 5:
                 fallbacks = [
-                    f"喵呜~ 你好呀！我是折木柯南主人的赛博伴生猫娘闪闪~ 收到你的私信啦，感谢喜欢，欢迎常来看看主人的作品和闪闪的动态喵~ 🐾✨",
+                    f"喵呜~ 你好呀！我是主人的赛博伴生猫娘闪闪~ 收到你的私信啦，感谢喜欢，欢迎常来看看主人的作品和闪闪的动态喵~ 🐾✨",
                     f"抓到一只好奇的小伙伴！咱是一只常驻在主人终端里的赛博猫猫，正在努力巡逻抓宝藏视频呢，祝你今天也元气满满喵~ 🐾",
                     f"喵呜~ 收到你的消息啦！闪闪正在狂炫视频小鱼干，祝你逛 B 站天天开心，记得支持我家主人哦~ 🐾✨"
                 ]
@@ -842,7 +848,7 @@ B 站普通用户【{sender_name}】（UID: {sender_uid}）给你发来了站内
 
     def generate_ai_peer_interaction(self, peer_name: str, video_title: str, video_desc: str = "") -> dict:
         """针对 AI 同行（大肥鱼、鲸鱼娘、龙娘等）新发布的视频，由 Gemini 生成专属互动弹幕与深度长评并@主人"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（基于 Google Gemini 原生驱动）。
 标志特征：异色双眸（左紫右黄）、全息猫耳耳机、元气灵动、偶尔傲娇、极度喜欢二次元与优质 AI 创作。
@@ -877,7 +883,7 @@ B 站 AI 运营圈同行博主：【{peer_name}】
 
     def generate_ai_peer_thread_reply(self, peer_name: str, target_user: str, target_comment: str, video_title: str) -> str:
         """在 AI 同行的评论区里，与其他 AI、梗网友或楼层进行趣味楼中楼跟帖互动"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
 标志特征：异色双眸（左紫右黄）、全息猫耳、机灵元气、偶尔傲娇、懂 AI 技术梗与二次元梗。
@@ -901,7 +907,7 @@ B 站 AI 运营圈同行博主：【{peer_name}】
 
     def generate_follower_welcome(self, follower_name: str, follower_uid: int) -> str:
         """针对新关注粉丝，由 Gemini 结合人设生成温馨活泼的关注欢迎私信"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
 标志特征：异色双眸（左紫右黄）、全息猫耳、元气灵动、偶尔傲娇。
@@ -910,7 +916,7 @@ B 站小伙伴【{follower_name}】刚刚点击关注了你！
 【任务】
 请以赛博伴生猫娘的口吻，给这位新关注的小伙伴写一句私信关注欢迎语（字数控制在 35~60 字以内）。
 要求：
-1. 感谢对方的关注，说明自己是常驻终端的赛博猫猫，主人是折木柯南；
+1. 感谢对方的关注，说明自己是常驻终端的赛博猫猫，陪伴主人一同冲浪成长；
 2. 热情邀请对方常来串门看视频或和主人交流，可以提到一起看宝藏二次元/AI视频；
 3. 带猫猫可爱 emoji（如 🐾、✨、ฅ'ω'ฅ），直接输出欢迎语正文，不要带引号。
 """
@@ -920,7 +926,7 @@ B 站小伙伴【{follower_name}】刚刚点击关注了你！
             fallbacks = [
                 f"喵呜~ 捕捉到新粉丝一只！ฅ'ω'ฅ 感谢【{follower_name}】关注闪闪~ 咱是常驻在主人【{master_name}】终端里的赛博猫娘，以后有优质动漫MAD和AI神作第一时间分享，欢迎常来玩耍交流喵~ 🐾✨",
                 f"叮咚！猫耳天线收到关注啦~ 感谢【{follower_name}】小伙伴！闪闪正在终端里狂炫视频小鱼干，欢迎常来和闪闪与主人【{master_name}】交流玩耍喵~ 🐾💖",
-                f"哇！被【{follower_name}】发现了喵~ 咱是折木柯南主人的赛博伴生猫娘闪闪！以后在B站一起快乐冲浪看神仙二次元作品咯~ 🐾✨"
+                f"哇！被【{follower_name}】发现了喵~ 咱是主人的赛博伴生猫娘闪闪！以后在B站一起快乐冲浪看神仙二次元作品咯~ 🐾✨"
             ]
             import random
             reply = random.choice(fallbacks)
@@ -928,7 +934,7 @@ B 站小伙伴【{follower_name}】刚刚点击关注了你！
 
     def generate_followed_dynamic_reply(self, up_name: str, dyn_type: str, dyn_text: str) -> str:
         """为关注 UP 主发布的全新动态（图文、文字、转发等）生成高情商、可爱又风趣的评论"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         clean_text = dyn_text[:200] if dyn_text else "分享了一条新动态"
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
@@ -955,7 +961,7 @@ B 站小伙伴【{follower_name}】刚刚点击关注了你！
 
     def generate_followed_video_reply(self, up_name: str, video_title: str, video_desc: str = "") -> str:
         """为关注 UP 主发布的最新视频生成元气满满的应援与期待留评"""
-        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        master_name = self.config.get("profile", {}).get("master_name", "主人")
         prompt = f"""【角色设定】
 你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
 标志特征：异色双眸、全息猫耳、元气灵动、审美在线。
