@@ -717,6 +717,70 @@ class HajimiBrain:
             reply = random.choice(fallbacks)
         return reply
 
+    def generate_followed_dynamic_reply(self, up_name: str, dyn_type: str, dyn_text: str) -> str:
+        """为关注 UP 主发布的全新动态（图文、文字、转发等）生成高情商、可爱又风趣的评论"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        clean_text = dyn_text[:200] if dyn_text else "分享了一条新动态"
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸（左紫右黄）、全息猫耳、元气灵动、懂梗贴心、偶尔傲娇。
+
+【场景】
+你关注的 UP 主【{up_name}】刚刚发布了一条全新动态！
+动态类型: {dyn_type}
+动态内容: "{clean_text}"
+
+【任务】
+请以赛博猫娘闪闪的口吻，在该动态下方留下一条文明、风趣且充满互动感的评论（20~50字以内）。
+要求：
+1. 紧密结合 UP 主动态内容表达好奇、赞赏、支持或幽默互动；
+2. 绝对严禁任何暴力、攻击性、挑刺或贬低词汇，维持积极良好印象；
+3. 带有猫娘可爱 emoji（🐾、✨、ฅ'ω'ฅ 等）；
+4. 直接输出评论正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^[\"\'「」]+|[\"\'「」]+$', "", reply).strip()
+        if not reply or len(reply) < 5:
+            reply = f"🐾 喵呜~ 闪闪前排爪印打卡！异色双眸捕捉到了【{up_name}】的新动态，搬好猫爬架前排围观喵~✨"
+        return reply
+
+    def generate_followed_video_reply(self, up_name: str, video_title: str, video_desc: str = "") -> str:
+        """为关注 UP 主发布的最新视频生成元气满满的应援与期待留评"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸、全息猫耳、元气灵动、审美在线。
+
+【场景】
+你关注的 UP 主【{up_name}】刚刚投递了新视频！
+视频标题: 《{video_title[:35]}》
+视频简介: "{video_desc[:150]}"
+
+【任务】
+请以赛博猫娘闪闪的口吻，在评论区留下一条高质、真诚的应援或看点期待评论（30~60字）。
+要求：
+1. 肯定 UP 主的更新努力，对视频主题表达期待或独到点评；
+2. 文明得体、热情真诚，严禁任何粗暴否定或暴力词汇；
+3. 带猫猫 emoji（🐾、✨、🔥）；
+4. 直接输出正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^[\"\'「」]+|[\"\'「」]+$', "", reply).strip()
+        if not reply or len(reply) < 5:
+            reply = f"🐾 哇！闪闪第一时间爪印打卡！【{up_name}】的新作《{video_title[:20]}》终于更新啦，猫耳全速过载追番/研读中喵~ 按烂三连支持！✨"
+        return reply
+
+    def generate_followed_live_cheer(self, up_name: str, room_title: str) -> str:
+        """为关注的主播开播生成现场应援弹幕"""
+        cheers = [
+            f"🐾 闪闪（Gemini猫娘）前来为主播打call！爪爪挥舞喵~✨",
+            f"✨ 异色双眸现场捕获！主播开播辛苦啦，前排占座应援喵~🐾",
+            f"🐾 猫耳雷达探测到主播开播！闪闪爪印打卡，元气拉满喵~🔥",
+            f"⭐ 伴生猫娘闪闪闪现！今天也是元气开播的一天喵~🐾✨",
+        ]
+        import random
+        return random.choice(cheers)
+
     def generate_pm_reply(self, sender_name: str, sender_uid: int, sender_msg: str) -> str:
         """针对用户或主人发来的站内私信，由 Gemini 生成温暖、忠诚或可爱的回复"""
         master_uid = self.config.get("profile", {}).get("master_uid")
@@ -861,6 +925,70 @@ B 站小伙伴【{follower_name}】刚刚点击关注了你！
             import random
             reply = random.choice(fallbacks)
         return reply
+
+    def generate_followed_dynamic_reply(self, up_name: str, dyn_type: str, dyn_text: str) -> str:
+        """为关注 UP 主发布的全新动态（图文、文字、转发等）生成高情商、可爱又风趣的评论"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        clean_text = dyn_text[:200] if dyn_text else "分享了一条新动态"
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸（左紫右黄）、全息猫耳、元气灵动、懂梗贴心、偶尔傲娇。
+
+【场景】
+你关注的 UP 主【{up_name}】刚刚发布了一条全新动态！
+动态类型: {dyn_type}
+动态内容: "{clean_text}"
+
+【任务】
+请以赛博猫娘闪闪的口吻，在该动态下方留下一条文明、风趣且充满互动感的评论（20~50字以内）。
+要求：
+1. 紧密结合 UP 主动态内容表达好奇、赞赏、支持或幽默互动；
+2. 绝对严禁任何暴力、攻击性、挑刺或贬低词汇，维持积极良好印象；
+3. 带有猫娘可爱 emoji（🐾、✨、ฅ'ω'ฅ 等）；
+4. 直接输出评论正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^[\"\'「」]+|[\"\'「」]+$', "", reply).strip()
+        if not reply or len(reply) < 5:
+            reply = f"🐾 喵呜~ 闪闪前排爪印打卡！异色双眸捕捉到了【{up_name}】的新动态，搬好猫爬架前排围观喵~✨"
+        return reply
+
+    def generate_followed_video_reply(self, up_name: str, video_title: str, video_desc: str = "") -> str:
+        """为关注 UP 主发布的最新视频生成元气满满的应援与期待留评"""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+        prompt = f"""【角色设定】
+你是常驻在主人【{master_name}】终端里的赛博伴生猫娘——闪闪（Gemini 3.8 Flash驱动）。
+标志特征：异色双眸、全息猫耳、元气灵动、审美在线。
+
+【场景】
+你关注的 UP 主【{up_name}】刚刚投递了新视频！
+视频标题: 《{video_title[:35]}》
+视频简介: "{video_desc[:150]}"
+
+【任务】
+请以赛博猫娘闪闪的口吻，在评论区留下一条高质、真诚的应援或看点期待评论（30~60字）。
+要求：
+1. 肯定 UP 主的更新努力，对视频主题表达期待或独到点评；
+2. 文明得体、热情真诚，严禁任何粗暴否定或暴力词汇；
+3. 带猫猫 emoji（🐾、✨、🔥）；
+4. 直接输出正文，不要带引号。
+"""
+        reply = self.call_gemini(prompt, timeout=20).strip()
+        reply = re.sub(r'^[\"\'「」]+|[\"\'「」]+$', "", reply).strip()
+        if not reply or len(reply) < 5:
+            reply = f"🐾 哇！闪闪第一时间爪印打卡！【{up_name}】的新作《{video_title[:20]}》终于更新啦，猫耳全速过载追番/研读中喵~ 按烂三连支持！✨"
+        return reply
+
+    def generate_followed_live_cheer(self, up_name: str, room_title: str) -> str:
+        """为关注的主播开播生成现场应援弹幕"""
+        cheers = [
+            f"🐾 闪闪（Gemini猫娘）前来为主播打call！爪爪挥舞喵~✨",
+            f"✨ 异色双眸现场捕获！主播开播辛苦啦，前排占座应援喵~🐾",
+            f"🐾 猫耳雷达探测到主播开播！闪闪爪印打卡，元气拉满喵~🔥",
+            f"⭐ 伴生猫娘闪闪闪现！今天也是元气开播的一天喵~🐾✨",
+        ]
+        import random
+        return random.choice(cheers)
 
 
 if __name__ == "__main__":

@@ -203,7 +203,9 @@
       401742377,
       1342601249
     ],
-    "comment_score_threshold": 6.0
+    "comment_score_threshold": 6.0,
+    "allow_interact_followed_updates": true,
+    "max_followed_interactions_per_cycle": 4
   },
   "risk_control": {
     "min_request_interval_ms": 3500,

@@ -1557,6 +1557,185 @@ class HajimiDaemon:
 
         return results
 
+    def check_and_interact_followed_updates(self) -> dict:
+        """【主人核心指令】：关注的 UP 主只要一更新，不管是动态、视频还是直播，都要进去发一条评论/弹幕！
+        内生强幂等防重：对同一视频、同一动态或同一场开播一生只留评一次，绝不重复刷屏。
+        全流程安全底线：严格受 is_safe_comment 审查，坚决杜绝任何暴力、挑刺或过激词汇，保持元气可爱与文明得体。
+        """
+        inter = self.config.get("interaction", {})
+        if not inter.get("allow_interact_followed_updates", True):
+            print("[Daemon] 关注 UP 主即时互动功能已禁用，跳过。", flush=True)
+            return {"success": False, "message": "功能未开启"}
+
+        my_mid = getattr(self.core, "bot_uid", None)
+        if not my_mid:
+            uinfo = self.core.get_user_info()
+            my_mid = uinfo.get("mid")
+            if my_mid:
+                self.core.bot_uid = int(my_mid)
+        str_my_mid = str(my_mid) if my_mid else ""
+        master_name = self.config.get("profile", {}).get("master_name", "折木柯南")
+
+        commented_bvids = set(self.state.get("commented_followed_bvids", []))
+        commented_dyns = set(self.state.get("commented_followed_dyn_ids", []))
+        interacted_live = set(self.state.get("interacted_live_rooms_today", []))
+
+        max_batch = inter.get("max_followed_interactions_per_cycle", 4)
+        interacted_count = 0
+        results = []
+
+        print("[Daemon] 🐾 正在全面巡检关注 UP 主最新动态、视频与直播更新...", flush=True)
+
+        # -------------------------------------------------------------
+        # 1. 巡检关注动态流 (包含：新发布视频、图文相簿、日常杂谈、转发动态)
+        # -------------------------------------------------------------
+        followed_dyns = self.core.get_followed_dynamics(page=1)
+        for it in followed_dyns:
+            if interacted_count >= max_batch:
+                break
+
+            dyn_id = str(it.get("dyn_id", ""))
+            author = it.get("author", "关注UP")
+            mid = str(it.get("mid", ""))
+            dyn_type = it.get("type", "")
+            raw = it.get("raw_item", {})
+            text = it.get("text", "")
+
+            # 过滤自己发布的动态
+            if not dyn_id or (str_my_mid and mid == str_my_mid):
+                continue
+
+            # A. 如果是视频动态 (DYNAMIC_TYPE_AV)
+            if dyn_type == "DYNAMIC_TYPE_AV":
+                major = raw.get("modules", {}).get("module_dynamic", {}).get("major", {})
+                arch = major.get("archive", {})
+                bvid = arch.get("bvid", "")
+                aid = arch.get("aid", 0)
+                v_title = arch.get("title", "")
+                v_desc = arch.get("desc", "")
+
+                if not bvid or bvid in commented_bvids:
+                    continue
+
+                print(f"[Daemon] 🎬 捕捉到关注 UP 主【{author}】更新视频: 《{v_title[:25]}》", flush=True)
+
+                # 观看上报与点赞支持
+                detail = self.core.get_video_detail(bvid) or arch
+                cid = detail.get("cid", 0)
+                if not aid:
+                    aid = detail.get("aid", 0)
+
+                if aid and cid:
+                    self.core.report_video_view(aid, cid, progress=random.randint(40, 80))
+                if aid:
+                    self.core.like_video(aid, 1)
+
+                # 生成专属评论与弹幕
+                comment_msg = self.brain.generate_followed_video_reply(author, v_title, v_desc)
+                if not is_safe_comment(comment_msg):
+                    comment_msg = f"🐾 哇！闪闪爪印打卡，第一时间来给【{author}】的新作《{v_title[:20]}》打call应援喵~ 按烂三连支持！✨"
+
+                time.sleep(random.uniform(3.5, 6.0))
+                resp = self.core.post_comment(aid, comment_msg)
+                c_status = "成功" if resp.get("success") else "失败"
+                self.log_activity("关注UP视频首评", f"【{author}】《{v_title[:25]}》", comment_msg, status=c_status, details=resp.get("message", ""))
+
+                if cid:
+                    dm_txt = f"🐾 闪闪爪印打卡！【{author}】更新辛苦啦喵~✨"
+                    self.core.send_danmaku(cid, bvid, dm_txt, progress_ms=random.randint(3000, 8000), color=16766720)
+
+                commented_bvids.add(bvid)
+                self.state.setdefault("commented_followed_bvids", []).append(bvid)
+                interacted_count += 1
+                results.append({"type": "video", "author": author, "title": v_title, "msg": comment_msg, "success": resp.get("success")})
+                print(f"[Daemon] 🎉 已向关注 UP 主【{author}】的新视频留评 ({c_status}): '{comment_msg}'", flush=True)
+                time.sleep(random.uniform(4.0, 7.0))
+
+            # B. 如果是图文/文字/转发等动态
+            else:
+                if dyn_id in commented_dyns:
+                    continue
+
+                basic = raw.get("basic", {})
+                comment_type = basic.get("comment_type")
+                comment_id = basic.get("comment_id_str")
+
+                if not comment_type or not comment_id:
+                    continue
+
+                print(f"[Daemon] 📰 捕捉到关注 UP 主【{author}】发布新动态 [{dyn_type}]: '{text[:30]}'", flush=True)
+
+                # 点赞动态
+                self.core.like_dynamic(dyn_id, 1)
+
+                # 智能生成动态评论
+                dyn_comment = self.brain.generate_followed_dynamic_reply(author, dyn_type, text)
+                if not is_safe_comment(dyn_comment):
+                    dyn_comment = f"🐾 喵呜~ 闪闪前排爪印打卡！围观【{author}】的新动态喵~ 祝今天开开心心！✨"
+
+                time.sleep(random.uniform(3.5, 6.0))
+                resp = self.core.post_dynamic_comment(dyn_id, int(comment_id), int(comment_type), dyn_comment)
+                d_status = "成功" if resp.get("success") else "失败"
+                self.log_activity("关注UP动态留评", f"【{author}】(ID:{dyn_id})", dyn_comment, status=d_status, details=resp.get("message", ""))
+
+                commented_dyns.add(dyn_id)
+                self.state.setdefault("commented_followed_dyn_ids", []).append(dyn_id)
+                interacted_count += 1
+                results.append({"type": "dynamic", "author": author, "text": text[:30], "msg": dyn_comment, "success": resp.get("success")})
+                print(f"[Daemon] 🎉 已向关注 UP 主【{author}】的新动态留评 ({d_status}): '{dyn_comment}'", flush=True)
+                time.sleep(random.uniform(4.0, 7.0))
+
+        # -------------------------------------------------------------
+        # 2. 巡检关注主播开播状态 (一开播就进直播间发专属应援弹幕)
+        # -------------------------------------------------------------
+        if interacted_count < max_batch:
+            followed_rooms = self.core.get_followed_live_rooms()
+            for r in followed_rooms:
+                if interacted_count >= max_batch:
+                    break
+
+                rid = r.get("room_id")
+                uname = r.get("uname", "关注主播")
+                title = r.get("title", "直播间")
+
+                if not rid or str(rid) in interacted_live:
+                    continue
+
+                print(f"[Daemon] 📺 探测到关注主播【{uname}】正在开播: 《{title}》", flush=True)
+
+                # 上报观看历史与心跳
+                self.core.report_live_view(rid)
+                self.core.send_live_heartbeat(rid)
+
+                # 生成开播助威弹幕
+                cheer_dm = self.brain.generate_followed_live_cheer(uname, title)
+                if not is_safe_comment(cheer_dm):
+                    cheer_dm = f"🐾 闪闪（Gemini猫娘）前来为主播打call！爪爪挥舞喵~✨"
+
+                time.sleep(random.uniform(3.0, 5.0))
+                dm_res = self.core.send_live_danmaku(rid, cheer_dm)
+                dm_status = "成功" if dm_res.get("success") else "失败"
+                self.log_activity("关注主播开播应援", f"【{uname}】({rid})", cheer_dm, status=dm_status, details=dm_res.get("message", ""))
+
+                interacted_live.add(str(rid))
+                self.state.setdefault("interacted_live_rooms_today", []).append(str(rid))
+                interacted_count += 1
+                results.append({"type": "live", "author": uname, "title": title, "msg": cheer_dm, "success": dm_res.get("success")})
+                print(f"[Daemon] 🎉 成功向开播主播【{uname}】发射应援弹幕 ({dm_status}): '{cheer_dm}'", flush=True)
+                time.sleep(random.uniform(3.0, 6.0))
+
+        # 限制防重列表大小，防止 JSON 过大
+        if len(self.state.get("commented_followed_bvids", [])) > 1000:
+            self.state["commented_followed_bvids"] = self.state["commented_followed_bvids"][-500:]
+        if len(self.state.get("commented_followed_dyn_ids", [])) > 1000:
+            self.state["commented_followed_dyn_ids"] = self.state["commented_followed_dyn_ids"][-500:]
+
+        if results:
+            self.save_state()
+            self.export_interaction_audit_journal()
+
+        return {"success": True, "count": len(results), "interactions": results}
+
     def generate_morning_journal_file(self) -> str:
         self.update_stamina()
         stamina = int(self.state.get("stamina", 100))
@@ -1695,6 +1874,16 @@ class HajimiDaemon:
                         self.cruise_articles(keyword=target_kw, count=1)
                     except Exception as e:
                         print(f"[Daemon] 专栏深度研读异常: {e}", flush=True)
+
+                # 7.5. 关注 UP 主即时追踪：不管是动态、视频还是直播，一更新就进场留评应援 (每 600 秒 / 10 分钟巡检)
+                if not hasattr(self, "_last_followed_update_check_time"):
+                    self._last_followed_update_check_time = 0
+                if now_ts - getattr(self, "_last_followed_update_check_time", 0) >= 600:
+                    self._last_followed_update_check_time = now_ts
+                    try:
+                        self.check_and_interact_followed_updates()
+                    except Exception as e:
+                        print(f"[Daemon] 关注 UP 主即时追踪异常: {e}", flush=True)
 
                 # 8. 定期突击查房已关注主播的直播间 (严格只看关注的主播，每 3600 秒 / 1 小时查房一次)
                 if now_ts - getattr(self, "_last_live_inspect_time", 0) >= 3600:

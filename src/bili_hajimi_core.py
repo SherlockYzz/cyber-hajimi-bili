@@ -663,14 +663,16 @@ class BiliHajimiCore:
             print(f"[Core] 抓取热门评论异常: {e}")
         return []
 
-    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None, root: int = 0, parent: int = 0, check_duplicate: bool = True) -> dict:
-        """发布视频主楼评论或回复指定热门评论。内生强幂等防重：同一视频若已有自身主楼评论，底层直接拒绝重复请求！"""
+    def post_comment(self, aid: int, message: str, at_name_to_mid: dict = None, root: int = 0, parent: int = 0, check_duplicate: bool = True, reply_type: int = 1, referer: str = "") -> dict:
+        """发布视频或动态评论，支持回复指定热门评论。内生强幂等防重。
+        reply_type: 1 为视频稿件, 11 为图文动态, 17 为转发/纯文字动态, 12 为专栏文章
+        """
         csrf = self.config.get("auth", {}).get("bili_jct", "")
         if not csrf:
             return {"success": False, "message": "未登录或缺少 csrf 凭证"}
 
-        # 核心内生防重机制：发布主楼评论 (root == 0) 时，底层先在线校验当前视频评论区是否已存在自己的评论
-        if root == 0 and check_duplicate and aid:
+        # 核心内生防重机制：发布主楼评论 (root == 0) 时，针对视频底层先在线校验是否已有自身评论
+        if root == 0 and check_duplicate and aid and reply_type == 1:
             my_mid = getattr(self, "bot_uid", None)
             if not my_mid:
                 uinfo = self.get_user_info()
@@ -685,14 +687,14 @@ class BiliHajimiCore:
                     replies = chk_res.get("data", {}).get("replies", []) or []
                     for r in replies:
                         if int(r.get("mid", 0)) == int(my_mid):
-                            return {"success": False, "message": f"该视频(aid:{aid})评论区已存在您的评论，底层防重机制已直接拦截，拒绝重复刷屏！", "code": -409}
+                            return {"success": False, "message": f"该内容(oid:{aid})评论区已存在您的评论，底层防重拦截！", "code": -409}
                 except Exception as e:
                     pass
 
         url = "https://api.bilibili.com/x/v2/reply/add"
         payload = {
-            "type": 1,
-            "oid": aid,
+            "type": int(reply_type),
+            "oid": int(aid),
             "message": message,
             "csrf": csrf,
             "plat": 1,
@@ -704,11 +706,24 @@ class BiliHajimiCore:
         if at_name_to_mid:
             payload["at_name_to_mid"] = json.dumps(at_name_to_mid, ensure_ascii=False)
 
-        resp = self._request(url, method="POST", data=payload, headers={"Referer": f"https://www.bilibili.com/video/av{aid}"})
+        ref_header = referer if referer else (f"https://www.bilibili.com/video/av{aid}" if reply_type == 1 else "https://t.bilibili.com")
+        resp = self._request(url, method="POST", data=payload, headers={"Referer": ref_header})
         if resp.get("code") == 0:
             return {"success": True, "message": "评论发布成功！", "data": resp.get("data")}
         else:
             return {"success": False, "message": resp.get("message", "发布失败"), "code": resp.get("code")}
+
+    def post_dynamic_comment(self, dyn_id: str, comment_id: int, comment_type: int, message: str, at_name_to_mid: dict = None) -> dict:
+        """为关注 UP 主发布的动态发表互动评论 (涵盖图文动态、文字动态、转发动态等)"""
+        ref = f"https://t.bilibili.com/{dyn_id}"
+        return self.post_comment(
+            aid=int(comment_id),
+            message=message,
+            at_name_to_mid=at_name_to_mid,
+            check_duplicate=False,
+            reply_type=int(comment_type),
+            referer=ref
+        )
 
     def delete_comment(self, aid: int, rpid: int, reply_type: int = 1) -> dict:
         """删除指定视频或专栏下自己发布的评论"""
@@ -1142,7 +1157,13 @@ class BiliHajimiCore:
                             "img_size": float(up_res.get("img_size", 500))
                         }
                     ],
-                    "scene": 2
+                    "scene": 2,
+                    "meta": {
+                        "app_meta": {
+                            "from": "create.dynamic.web",
+                            "mobi_app": "web"
+                        }
+                    }
                 }
             }
             res = requests.post(modern_url, headers=headers, json=payload, timeout=15)
@@ -1271,6 +1292,14 @@ class BiliHajimiCore:
                 mid = author_info.get("mid", 0)
                 desc_obj = (it.get("modules", {}).get("module_dynamic") or {}).get("desc") or {}
                 text = desc_obj.get("text", "") if isinstance(desc_obj, dict) else ""
+                if not text:
+                    major = (it.get("modules", {}).get("module_dynamic") or {}).get("major") or {}
+                    if isinstance(major, dict) and major.get("opus"):
+                        summary = major["opus"].get("summary")
+                        if isinstance(summary, dict):
+                            text = summary.get("text", "")
+                        elif isinstance(summary, str):
+                            text = summary
                 dyn_type = it.get("type", "")
                 results.append({
                     "dyn_id": dyn_id,
@@ -1297,6 +1326,14 @@ class BiliHajimiCore:
                 author = author_info.get("name", "")
                 desc_obj = (it.get("modules", {}).get("module_dynamic") or {}).get("desc") or {}
                 text = desc_obj.get("text", "") if isinstance(desc_obj, dict) else ""
+                if not text:
+                    major = (it.get("modules", {}).get("module_dynamic") or {}).get("major") or {}
+                    if isinstance(major, dict) and major.get("opus"):
+                        summary = major["opus"].get("summary")
+                        if isinstance(summary, dict):
+                            text = summary.get("text", "")
+                        elif isinstance(summary, str):
+                            text = summary
                 dyn_type = it.get("type", "")
                 results.append({
                     "dyn_id": dyn_id,
